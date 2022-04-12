@@ -468,8 +468,7 @@ def train_epoch(data_iter, models, num_personas, optimizers, schedulers, gradien
             loss = loss / gradient_accumulation_steps
         if fp16:
             with amp.scale_loss(loss, optimizer) as scaled_loss:
-                loss.backward()
-                # scaled_loss.backward()
+                scaled_loss.backward()
         else:
             loss.backward()
 
