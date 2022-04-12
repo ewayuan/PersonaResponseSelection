@@ -201,24 +201,15 @@ def main(config, progress):
     # convert to token ids
     cprint("Converting conversations to ids: ")
     if not test_mode:
-        if persona is not None:
-            all_context_ids_train, all_context_attention_mask_train, all_context_token_type_ids_train, \
-            all_response_ids_train, all_response_attention_mask_train, all_response_token_type_ids_train, \
-            all_persona_ids_train, all_persona_attention_mask_train, all_persona_token_type_ids_train = \
-                convert_conversations_to_ids(word_level_train, word_level_persona, tokenizer, max_seq_len, max_sent_len, num_personas)
-        else:
-            all_context_ids_train, all_context_attention_mask_train, all_context_token_type_ids_train, \
-            all_response_ids_train, all_response_attention_mask_train, all_response_token_type_ids_train =\
-                convert_conversations_to_ids(word_level_train, word_level_persona, tokenizer, max_seq_len, max_sent_len, num_personas)
-    if persona is not None:
-        all_context_ids_valid, all_context_attention_mask_valid, all_context_token_type_ids_valid, \
-        all_response_ids_valid, all_response_attention_mask_valid, all_response_token_type_ids_valid, \
-        all_persona_ids_valid, all_persona_attention_mask_valid, all_persona_token_type_ids_valid = \
-            convert_conversations_to_ids(word_level_valid, word_level_persona, tokenizer, max_seq_len, max_sent_len, num_personas)
-    else:
-        all_context_ids_valid, all_context_attention_mask_valid, all_context_token_type_ids_valid, \
-        all_response_ids_valid, all_response_attention_mask_valid, all_response_token_type_ids_valid =\
-            convert_conversations_to_ids(word_level_valid, word_level_persona, tokenizer, max_seq_len, max_sent_len, num_personas)
+        all_context_ids_train, all_context_attention_mask_train, all_context_token_type_ids_train, \
+        all_response_ids_train, all_response_attention_mask_train, all_response_token_type_ids_train, \
+        all_persona_ids_train, all_persona_attention_mask_train, all_persona_token_type_ids_train = \
+            convert_conversations_to_ids(word_level_train, word_level_persona, tokenizer, max_seq_len, max_sent_len, num_personas)
+    # For valid
+    all_context_ids_valid, all_context_attention_mask_valid, all_context_token_type_ids_valid, \
+    all_response_ids_valid, all_response_attention_mask_valid, all_response_token_type_ids_valid, \
+    all_persona_ids_valid, all_persona_attention_mask_valid, all_persona_token_type_ids_valid = \
+        convert_conversations_to_ids(word_level_valid, word_level_persona, tokenizer, max_seq_len, max_sent_len, num_personas)
 
 
     # Topic Modelling
@@ -229,39 +220,64 @@ def main(config, progress):
     topic_embedding = load_pickle("./TopicModelling/topic_frequent_words_embedding.pkl")
     # train: (context, reponse, spearker)
     if not test_mode:
-        cprint("Create Context andr Response Topic Modelling for train...")
-        topic_modelling_train = create_context_and_response_topic_modelling(train)
-        # topic_modelling_train: [(topic_distribution_of_context: List, topic_distribution_of_response: List, speaker)]
-        cprint("Generate Data Topic Distribuition for train...")
-        topic_modelling_train = generate_data_topic_distribuition(topic_modelling_train, lda, common_dict)
-        cprint("Convert to Topic Embedding Data for trian")
-        # topic_embedding_train: [context_topic_embedding, response_topic_embedding, persona_topic_embedding]
-        # context_topic_embedding = [(topic_id, topic_embedding, topic_prob), ..., ...]
-        topic_embedding_train = convert_to_topic_embedding_data (topic_embedding, topic_modelling_train)
-        cprint("Convert spearker to persona Topic Embedding for train")
-        topic_embedding_train = convert_speaker_to_persona_topic_embedding(persona, topic_embedding_train, topic_embedding, common_dict, lda)
-        # topic_embedding_train/valid: TensorDataset:(all_Uce_context, all_UPct_context, all_Uce_response, all_UPct_response, all_Uce_persona, all_UPct_persona)
-        #                               all_Uce_context size:  torch.Size([n, 100, 768]) all_UPct_context size:  torch.Size([n, 1, 100])
-        #                               all_Uce_response size:  torch.Size([n, 100, 768]) all_UPct_response size:  torch.Size([n, 1, 100])
-        #                               all_Uce_persona size:  torch.Size([n, 100, 768]) all_UPct_persona size:  torch.Size([n, 1, 100])
-        cprint("Convert topic embdding matrix for train")
-        all_Uce_context_train, all_UPct_context_train, all_context_topic_mask_train,  \
-        all_Uce_response_train, all_UPct_response_train, all_response_topic_mask_train,\
-        all_Uce_persona_train, all_UPct_persona_train, all_persona_topic_mask_train = convert_topic_embedding_matrix(topic_embedding_train)
+        cached_context_topic_distribution_train_path = train_path.replace("train.pkl", "cached_context_topic_distribution_train.pkl")
+        cached_response_topic_distribution_train_path = train_path.replace("train.pkl", "cached_response_topic_distribution_train.pkl")
+        cached_persona_topic_distribution_train_path = train_path.replace("train.pkl", "cached_persona_topic_distribution_train.pkl")
+        if os.path.exists(cached_context_topic_distribution_train_path) and os.path.exists(cached_response_topic_distribution_train_path) and os.path.exists(cached_persona_topic_distribution_train_path):
+            cprint("Loading Context and Response Topic Modelling for train...")
+            context_topic_distribution_train = load_pickle(cached_context_topic_distribution_train_path)
+            response_topic_distribution_train = load_pickle(cached_response_topic_distribution_train_path)
+            persona_topic_distribution_train = load_pickle(cached_persona_topic_distribution_train_path)
+        else:
+            cprint("Create Context and Response Topic Modelling for train...")
+            topic_modelling_train = create_context_and_response_topic_modelling(train)
+            # topic_modelling_train: [(topic_distribution_of_context: List, topic_distribution_of_response: List, speaker)]
+            context_topic_distribution_train, response_topic_distribution_train, persona_topic_distribution_train = \
+                generate_data_topic_distribuition(topic_modelling_train, persona, lda, common_dict)
+            save_pickle(context_topic_distribution_train, cached_context_topic_distribution_train_path)
+            save_pickle(response_topic_distribution_train, cached_response_topic_distribution_train_path)
+            save_pickle(persona_topic_distribution_train, cached_persona_topic_distribution_train_path)
 
-    cprint("Create Context andr Response Topic Modelling for valid...")
-    topic_modelling_valid = create_context_and_response_topic_modelling(valid)
-    cprint("Generate Data Topic Distribuition for valid...")
-    topic_modelling_valid = generate_data_topic_distribuition(topic_modelling_valid, lda, common_dict)
-    cprint("Convert to Topic Embedding Data for valid")
-    topic_embedding_valid = convert_to_topic_embedding_data (topic_embedding, topic_modelling_valid)
-    # topic_embedding_valid: [context_topic_embedding, response_topic_embedding, persona_topic_embedding]
-    # context_topic_embedding = [(topic_id, topic_embedding, topic_prob), ..., ...]
-    cprint("Convert spearker to persona Topic Embedding for valid")
-    topic_embedding_valid = convert_speaker_to_persona_topic_embedding(persona, topic_embedding_valid, topic_embedding, common_dict, lda)
-    all_Uce_context_valid, all_UPct_context_valid, all_context_topic_mask_valid, \
-    all_Uce_response_valid, all_UPct_response_valid, all_response_topic_mask_valid, \
-    all_Uce_persona_valid, all_UPct_persona_valid, all_persona_topic_mask_valid = convert_topic_embedding_matrix(topic_embedding_valid)
+
+        # cprint("Convert to Topic Embedding Data for trian")
+        # # topic_embedding_train: [context_topic_embedding, response_topic_embedding, persona_topic_embedding]
+        # # context_topic_embedding = [(topic_id, topic_embedding, topic_prob), ..., ...]
+        # topic_embedding_train = convert_to_topic_embedding_data (topic_embedding, topic_modelling_train)
+        # # topic_embedding_train/valid: TensorDataset:(all_Uce_context, all_UPct_context, all_Uce_response, all_UPct_response, all_Uce_persona, all_UPct_persona)
+        # #                               all_Uce_context size:  torch.Size([n, 100, 768]) all_UPct_context size:  torch.Size([n, 1, 100])
+        # #                               all_Uce_response size:  torch.Size([n, 100, 768]) all_UPct_response size:  torch.Size([n, 1, 100])
+        # #                               all_Uce_persona size:  torch.Size([n, 100, 768]) all_UPct_persona size:  torch.Size([n, 1, 100])
+        # cprint("Convert topic embdding matrix for train")
+        # all_Uce_context_train, all_UPct_context_train, all_context_topic_mask_train,  \
+        # all_Uce_response_train, all_UPct_response_train, all_response_topic_mask_train,\
+        # all_Uce_persona_train, all_UPct_persona_train, all_persona_topic_mask_train = convert_topic_embedding_matrix(topic_embedding_train)
+
+    cached_context_topic_distribution_valid_path = "cached_context_topic_distribution_valid.pkl"
+    cached_response_topic_distribution_valid_path = "cached_response_topic_distribution_valid.pkl"
+    cached_persona_topic_distribution_valid_path = "cached_persona_topic_distribution_valid.pkl"
+    if os.path.exists(cached_context_topic_distribution_valid_path) and os.path.exists(cached_response_topic_distribution_valid_path) and os.path.exists(cached_persona_topic_distribution_valid_path):
+        cprint("Loading Context and Response Topic Modelling for valid...")
+        context_topic_distribution_valid = load_pickle(cached_context_topic_distribution_valid_path)
+        response_topic_distribution_valid = load_pickle(cached_response_topic_distribution_valid_path)
+        persona_topic_distribution_valid = load_pickle(cached_persona_topic_distribution_valid_path)
+    else:
+        cprint("Create Context and Response Topic Modelling for valid...")
+        topic_modelling_valid = create_context_and_response_topic_modelling(valid)
+        # topic_modelling_valid: [(topic_distribution_of_context: List, topic_distribution_of_response: List, speaker)]
+        context_topic_distribution_valid, response_topic_distribution_valid, persona_topic_distribution_valid = \
+            generate_data_topic_distribuition(topic_modelling_valid, persona, lda, common_dict)
+        save_pickle(context_topic_distribution_valid, cached_context_topic_distribution_valid_path)
+        save_pickle(response_topic_distribution_valid, cached_response_topic_distribution_valid_path)
+        save_pickle(persona_topic_distribution_valid, cached_persona_topic_distribution_valid_path)
+
+    # cprint("Convert to Topic Embedding Data for valid")
+    # topic_embedding_valid = convert_to_topic_embedding_data (topic_embedding, topic_modelling_valid)
+    # # topic_embedding_valid: [context_topic_embedding, response_topic_embedding, persona_topic_embedding]
+    # # context_topic_embedding = [(topic_id, topic_embedding, topic_prob), ..., ...]
+    # cprint("Convert spearker to persona Topic Embedding for valid")
+    # all_Uce_context_valid, all_UPct_context_valid, all_context_topic_mask_valid, \
+    # all_Uce_response_valid, all_UPct_response_valid, all_response_topic_mask_valid, \
+    # all_Uce_persona_valid, all_UPct_persona_valid, all_persona_topic_mask_valid = convert_topic_embedding_matrix(topic_embedding_valid)
 
 
     # Create word_level_train Dataloader & topic_embedding_train Dataloader
@@ -285,13 +301,37 @@ def main(config, progress):
     # cprint("all_context_topic_mask_valid: ", all_context_topic_mask_valid.size())
     # cprint("all_response_topic_mask_valid: ", all_response_topic_mask_valid.size())
     # cprint("all_persona_topic_mask_valid: ", all_persona_topic_mask_valid.size())
+    cprint("all_context_ids_train: ", all_context_ids_train.size())
+    cprint("all_context_attention_mask_train: ", all_context_attention_mask_train.size())
+    cprint("all_context_token_type_ids_train: ", all_context_token_type_ids_train.size())
+    cprint("all_response_ids_train: ", all_response_ids_train.size())
+    cprint("all_response_attention_mask_train: ", all_response_attention_mask_train.size())
+    cprint("all_response_token_type_ids_train: ", all_response_token_type_ids_train.size())
+    cprint("all_persona_ids_train: ", all_persona_ids_train.size())
+    cprint("all_persona_attention_mask_train: ", all_persona_attention_mask_train.size())
+    cprint("all_persona_token_type_ids_train: ", all_persona_token_type_ids_train.size())
+    cprint("context_topic_distribution_train: ", context_topic_distribution_train.size())
+    cprint("response_topic_distribution_train: ", response_topic_distribution_train.size())
+    cprint("persona_topic_distribution_train: ", persona_topic_distribution_train.size())
+
+    cprint("all_context_ids_valid: ", all_context_ids_valid.size())
+    cprint("all_context_attention_mask_valid: ", all_context_attention_mask_valid.size())
+    cprint("all_context_token_type_ids_valid: ", all_context_token_type_ids_valid.size())
+    cprint("all_response_ids_valid: ", all_response_ids_valid.size())
+    cprint("all_response_attention_mask_valid: ", all_response_attention_mask_valid.size())
+    cprint("all_response_token_type_ids_valid: ", all_response_token_type_ids_valid.size())
+    cprint("all_persona_ids_valid: ", all_persona_ids_valid.size())
+    cprint("all_persona_attention_mask_valid: ", all_persona_attention_mask_valid.size())
+    cprint("all_persona_token_type_ids_valid: ", all_persona_token_type_ids_valid.size())
+    cprint("context_topic_distribution_valid: ", context_topic_distribution_valid.size())
+    cprint("response_topic_distribution_valid: ", response_topic_distribution_valid.size())
+    cprint("persona_topic_distribution_valid: ", persona_topic_distribution_valid.size())
+
     if not test_mode:
         train_dataset = TensorDataset(all_context_ids_train, all_context_attention_mask_train, all_context_token_type_ids_train, \
                                       all_response_ids_train, all_response_attention_mask_train, all_response_token_type_ids_train, \
                                       all_persona_ids_train, all_persona_attention_mask_train, all_persona_token_type_ids_train,\
-                                      all_Uce_context_train, all_UPct_context_train, all_context_topic_mask_train, \
-                                      all_Uce_response_train, all_UPct_response_train, all_response_topic_mask_train, \
-                                      all_Uce_persona_train, all_UPct_persona_train, all_persona_topic_mask_train)
+                                      context_topic_distribution_train, response_topic_distribution_train, persona_topic_distribution_train)
         train_sampler = RandomSampler(train_dataset)
         train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=batch_size, drop_last=True)
         t_total = len(train_dataloader) // gradient_accumulation_steps * epochs
@@ -299,9 +339,7 @@ def main(config, progress):
     valid_dataset = TensorDataset(all_context_ids_valid, all_context_attention_mask_valid, all_context_token_type_ids_valid, \
                                   all_response_ids_valid, all_response_attention_mask_valid, all_response_token_type_ids_valid, \
                                   all_persona_ids_valid, all_persona_attention_mask_valid, all_persona_token_type_ids_valid,\
-                                  all_Uce_context_valid, all_UPct_context_valid, all_context_topic_mask_valid, \
-                                  all_Uce_response_valid, all_UPct_response_valid, all_response_topic_mask_valid, \
-                                  all_Uce_persona_valid, all_UPct_persona_valid, all_persona_topic_mask_valid)
+                                  context_topic_distribution_valid, response_topic_distribution_valid, persona_topic_distribution_valid)
     valid_sampler = RandomSampler(valid_dataset)
     valid_dataloader = DataLoader(valid_dataset, sampler=valid_sampler, batch_size=num_candidates)
 
@@ -393,7 +431,7 @@ def main(config, progress):
         train_iterator = tqdm(train_dataloader, desc="Iteration")
 
         train_loss, (train_acc, _, _) = train_epoch(train_iterator, models, num_personas, optimizers, \
-            schedulers, gradient_accumulation_steps, device, fp16, amp, apply_interaction, matching_method, aggregation_method)
+            schedulers, gradient_accumulation_steps, device, fp16, amp, apply_interaction, matching_method, aggregation_method, topic_embedding)
         epoch_train_losses.append(train_loss)
 
         # evaluation
@@ -401,7 +439,7 @@ def main(config, progress):
             model.eval()
         valid_iterator = tqdm(valid_dataloader, desc="Iteration")
         valid_loss, (valid_acc, valid_recall, valid_MRR) = evaluate_epoch(valid_iterator, models, \
-            num_personas, gradient_accumulation_steps, device, dataset, epoch, apply_interaction, matching_method, aggregation_method)
+            num_personas, gradient_accumulation_steps, device, dataset, epoch, apply_interaction, matching_method, aggregation_method, topic_embedding)
 
         cprint("Config id: {7}, Epoch {0}: train loss: {1:.4f}, valid loss: {2:.4f}, train_acc: {3:.4f}, valid acc: {4:.4f}, valid recall: {5}, valid_MRR: {6:.4f}"
             .format(epoch+1, train_loss, valid_loss, train_acc, valid_acc, valid_recall, valid_MRR, config_id))

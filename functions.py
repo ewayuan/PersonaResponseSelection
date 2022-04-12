@@ -330,7 +330,6 @@ def fuse(batch_context_emb, batch_response_emb, batch_persona_emb, \
     # word level: [batch_size, # of words]
     # topic_level mask: [batch_size, # of topic K = 100]
     # Get the attention mask
-
     context_attn_mask = (1 - torch.bmm(batch_context_mask.unsqueeze(-1), batch_context_topic_mask.unsqueeze(1)).to(batch_context_mask.device)).bool() # (batch_size, m, n)
     response_attn_mask = (1 - torch.bmm(batch_response_mask.unsqueeze(-1), batch_response_topic_mask.unsqueeze(1)).to(batch_response_mask.device)).bool() # (batch_size, m, n)
     persona_attn_mask = (1 - torch.bmm(batch_persona_mask.unsqueeze(-1), batch_persona_topic_mask.unsqueeze(1)).to(batch_persona_mask.device)).bool() # (batch_size, m, n)
@@ -338,6 +337,7 @@ def fuse(batch_context_emb, batch_response_emb, batch_persona_emb, \
 
     # Create attn mask
     context_self_attn = nn.MultiheadAttention(embed_dim, num_heads=1, batch_first=True, device=batch_context_emb.device)
+
     context_attn_output, context_output_weights = \
         context_self_attn(batch_context_emb, batch_Uce_context * batch_UPct_context.repeat(1, 768, 1).transpose(1, 2), batch_Uce_context, \
                            key_padding_mask=1-batch_context_topic_mask, attn_mask=context_attn_mask)
@@ -377,7 +377,7 @@ def fuse(batch_context_emb, batch_response_emb, batch_persona_emb, \
     return matching_output.squeeze(), context_output_weights , context_attn_output
 
 def train_epoch(data_iter, models, num_personas, optimizers, schedulers, gradient_accumulation_steps, device, fp16, amp, \
-    apply_interaction, matching_method, aggregation_method):
+    apply_interaction, matching_method, aggregation_method, topic_embedding):
     epoch_loss = []
     ok = 0
     total = 0
@@ -399,8 +399,10 @@ def train_epoch(data_iter, models, num_personas, optimizers, schedulers, gradien
         batch = tuple(t.to(device) for t in batch)
         batch_context_word_level = {"input_ids": batch[0], "attention_mask": batch[1], "token_type_ids": batch[2]}
         batch_response_word_level = {"input_ids": batch[3], "attention_mask": batch[4], "token_type_ids": batch[5]}
-        batch_Uce_context, batch_UPct_context, batch_context_topic_mask =  batch[9],  batch[10], batch[11].float()
-        batch_Uce_response, batch_UPct_response, batch_response_topic_mask = batch[12], batch[13], batch[14].float()
+        batch_context_topic_distribution, batch_response_topic_distribution, batch_persona_topic_distribution =  batch[9],  batch[10], batch[11]
+        batch_topic_embedding_data = convert_to_topic_embedding_data(topic_embedding, batch_context_topic_distribution, batch_response_topic_distribution, batch_persona_topic_distribution)
+        batch_Uce_context, batch_UPct_context, batch_context_topic_mask, batch_Uce_response, batch_UPct_response, \
+        batch_response_topic_mask, batch_Uce_persona, batch_UPct_persona, batch_persona_topic_mask = convert_topic_embedding_matrix(batch_topic_embedding_data, device)
 
         has_persona = len(batch) > 10
         if i==0:
@@ -408,7 +410,6 @@ def train_epoch(data_iter, models, num_personas, optimizers, schedulers, gradien
 
         if has_persona:
             batch_word_persona = {"input_ids": batch[6], "attention_mask": batch[7], "token_type_ids": batch[8]}
-            batch_Uce_persona, batch_UPct_persona, batch_persona_topic_mask = batch[15], batch[16], batch[17].float()
 
         output_context_word_level = context_model(**batch_context_word_level)
         output_response_word_level = response_model(**batch_response_word_level)
@@ -467,7 +468,8 @@ def train_epoch(data_iter, models, num_personas, optimizers, schedulers, gradien
             loss = loss / gradient_accumulation_steps
         if fp16:
             with amp.scale_loss(loss, optimizer) as scaled_loss:
-                scaled_loss.backward()
+                loss.backward()
+                # scaled_loss.backward()
         else:
             loss.backward()
 
@@ -493,7 +495,7 @@ def train_epoch(data_iter, models, num_personas, optimizers, schedulers, gradien
     return np.mean(epoch_loss), (acc, 0, 0)
 
 def evaluate_epoch(data_iter, models, num_personas, gradient_accumulation_steps, device, dataset, epoch, \
-    apply_interaction, matching_method, aggregation_method):
+    apply_interaction, matching_method, aggregation_method, topic_embedding):
     epoch_loss = []
     ok = 0
     total = 0
@@ -513,7 +515,10 @@ def evaluate_epoch(data_iter, models, num_personas, gradient_accumulation_steps,
     for batch_idx, batch in enumerate(data_iter):
         batch = tuple(t.to(device) for t in batch)
         batch_response_word_level = {"input_ids": batch[3], "attention_mask": batch[4], "token_type_ids": batch[5]}
-        batch_Uce_response, batch_UPct_response, batch_response_topic_mask = batch[12], batch[13], batch[14].float()
+        batch_context_topic_distribution, batch_response_topic_distribution, batch_persona_topic_distribution =  batch[9],  batch[10], batch[11]
+        batch_topic_embedding_data = convert_to_topic_embedding_data(topic_embedding, batch_context_topic_distribution, batch_response_topic_distribution, batch_persona_topic_distribution)
+        _, _, _, batch_Uce_response, batch_UPct_response, batch_response_topic_mask, _, _, _ = convert_topic_embedding_matrix(batch_topic_embedding_data, device)
+
         has_persona = len(batch) > 10
 
         # get context embeddings in chunks due to memory constraint
@@ -539,7 +544,9 @@ def evaluate_epoch(data_iter, models, num_personas, gradient_accumulation_steps,
                 batch_context_emb.append(mini_output_x[0]) # [(chunk_size, seq_len, emb_size), ...]
                 batch_context_pooled_emb.append(mini_output_x[1])
             batch_context_emb = torch.cat(batch_context_emb, dim=0) # (batch_size, seq_len, emb_size)
-            batch_Uce_context, batch_UPct_context, batch_context_topic_mask =  batch[9],  batch[10], batch[11].float()
+            # batch_Uce_context, batch_UPct_context, batch_context_topic_mask =  batch[9],  batch[10], batch[11].float()
+            batch_Uce_context, batch_UPct_context, batch_context_topic_mask, _, _, _, batch_Uce_persona, batch_UPct_persona, batch_persona_topic_mask \
+                = convert_topic_embedding_matrix(batch_topic_embedding_data, device)
             batch_context_pooled_emb = torch.cat(batch_context_pooled_emb, dim=0)
             emb_size = batch_context_emb.shape[-1]
 
@@ -563,7 +570,6 @@ def evaluate_epoch(data_iter, models, num_personas, gradient_accumulation_steps,
 
                 batch_persona_emb = torch.cat(batch_persona_emb, dim=0)
                 batch_persona_pooled_emb = torch.cat(batch_persona_pooled_emb, dim=0)
-                batch_Uce_persona, batch_UPct_persona, batch_persona_topic_mask = batch[15], batch[16], batch[17].float()
 
         with torch.no_grad():
             output_response = response_model(**batch_response_word_level)
@@ -669,42 +675,53 @@ def lda_preprocess(docs, common_dic):
         corpus = [common_dic.doc2bow(doc) for doc in docs]
         return corpus, None
 
-def generate_data_topic_distribuition(data, lda, common_dict):
-    topic_distribution_data = []
-    for context, response, spearker in data:
+def generate_data_topic_distribuition(data, persona, lda, common_dict):
+    context_topic_distribution, response_topic_distribution, persona_topic_distribution = [], [], []
+    for context, response, speaker in data:
+        persoa_sentences = " ".join(persona[speaker])
         context_corpu, context_dic  = lda_preprocess([context], common_dict)
         response_corpus, response_dic = lda_preprocess([response], common_dict)
-        topic_distribution_data.append((lda.get_document_topics(context_corpu[0]), lda.get_document_topics(response_corpus[0]), spearker))
-    return topic_distribution_data
+        persona_corpus, persona_dic = lda_preprocess([persoa_sentences], common_dict)
+        context_topic_distribution.append(torch.as_tensor(lda.get_document_topics(context_corpu[0])))
+        response_topic_distribution.append(torch.as_tensor(lda.get_document_topics(response_corpus[0])))
+        persona_topic_distribution.append(torch.as_tensor(lda.get_document_topics(persona_corpus[0])))
+    context_topic_distribution = torch.nn.utils.rnn.pad_sequence(context_topic_distribution, batch_first=True, padding_value=0)
+    response_topic_distribution = torch.nn.utils.rnn.pad_sequence(response_topic_distribution, batch_first=True, padding_value=0)
+    persona_topic_distribution = torch.nn.utils.rnn.pad_sequence(persona_topic_distribution, batch_first=True, padding_value=0)
+    return context_topic_distribution, response_topic_distribution, persona_topic_distribution
+
 
 def convert_topic_id_to_embedding(topic_embedding, data):
     # data: [(topic_id_1, topic_prob_1), (topic_id_2, topic_prob_2), ...]
     topic_embedding_prob_list = []
     for topic_id, topic_prob in data:
-        topic_embedding_prob_list.append((topic_id, topic_embedding[topic_id], topic_prob))
+        if int(topic_id) == 0 and topic_prob == 0:
+            continue
+        topic_embedding_prob_list.append((topic_id, topic_embedding[int(topic_id)], topic_prob))
     return topic_embedding_prob_list
 
 
-def convert_to_topic_embedding_data(topic_embedding, data):
+def convert_to_topic_embedding_data(topic_embedding, context_topic_distribution, response_topic_distribution, persona_topic_distribution):
     topic_embedding_data = []
-    for context, response, speaker in data:
+    for context, response, persona in zip(context_topic_distribution, response_topic_distribution, persona_topic_distribution):
         context_topic_embedding_prob = convert_topic_id_to_embedding(topic_embedding, context)
         response_topic_embedding_prob = convert_topic_id_to_embedding(topic_embedding, response)
-        topic_embedding_data.append((context_topic_embedding_prob, response_topic_embedding_prob, speaker))
+        persona_topic_embedding_prob = convert_topic_id_to_embedding(topic_embedding, persona)
+        topic_embedding_data.append((context_topic_embedding_prob, response_topic_embedding_prob, persona_topic_embedding_prob))
     return topic_embedding_data
 
-def convert_speaker_to_persona_topic_embedding(persona, data, topic_embedding, common_dict, lda):
-    topic_embedding_data = []
-    for context_topic_embedding, response_embedding, speaker in data:
-        persoa_sentences = " ".join(persona[speaker])
-        persona_corpus, persona_dic = lda_preprocess([persoa_sentences], common_dict)
-        perona_topic_distrbution = lda.get_document_topics(persona_corpus[0])
-        persona_topic_embedding_prob = convert_topic_id_to_embedding(topic_embedding, perona_topic_distrbution)
-        topic_embedding_data.append((context_topic_embedding, response_embedding, persona_topic_embedding_prob))
-    return topic_embedding_data
+# def convert_speaker_to_persona_topic_embedding(persona, data, topic_embedding, common_dict, lda):
+#     topic_embedding_data = []
+#     for context_topic_embedding, response_embedding, speaker in data:
+#         persoa_sentences = " ".join(persona[speaker])
+#         persona_corpus, persona_dic = lda_preprocess([persoa_sentences], common_dict)
+#         perona_topic_distrbution = lda.get_document_topics(persona_corpus[0])
+#         persona_topic_embedding_prob = convert_topic_id_to_embedding(topic_embedding, perona_topic_distrbution)
+#         topic_embedding_data.append((context_topic_embedding, response_embedding, persona_topic_embedding_prob))
+#     return topic_embedding_data
+#
 
-
-def convert_topic_embedding_matrix(data):
+def convert_topic_embedding_matrix(data, device):
     # all_Uce_context = torch.zeros([len(data), 100, 768], dtype=torch.float64)
     # all_UPct_context = torch.zeros([len(data), 100, 768], dtype=torch.float64)
     #
@@ -716,63 +733,74 @@ def convert_topic_embedding_matrix(data):
     all_Uce_context, all_UPct_context, all_context_mask, \
     all_Uce_response, all_UPct_response, all_response_mask, \
     all_Uce_persona, all_UPct_persona, all_persona_mask = [], [], [], [], [], [], [], [], []
-    for context, response, persona in tqdm(data):
+    for context, response, persona in data:
         # context
-        # Uce_context = torch.zeros([100, 768], dtype=torch.float64)
-        # UPct_context = torch.zeros([1, 100], dtype=torch.float64)
-        Uce_context = np.zeros((100, 768))
-        UPct_context = np.zeros((1, 100))
+        Uce_context = torch.zeros([100, 768], dtype=torch.float)
+        UPct_context = torch.zeros([1, 100], dtype=torch.float)
+        # Uce_context = np.zeros((100, 768))
+        # UPct_context = np.zeros((1, 100))
         context_mask = [1] * len(context) + ([0] * (100 - len(context)))
         for idx, values in enumerate(context):
             topic_id, topic_embedding, topic_prob = values[0], values[1], values[2]
             Uce_context[idx,:] = topic_embedding
-            UPct_context[0,idx] = torch.as_tensor(np.array(topic_prob).astype('float64'))
-
+            UPct_context[0,idx] = torch.as_tensor(topic_prob).to(device)
         all_Uce_context.append(Uce_context)
         all_UPct_context.append(UPct_context)
         all_context_mask.append(context_mask)
 
         # response
-        # Uce_response = torch.zeros([100, 768], dtype=torch.float64)
-        # UPct_response = torch.zeros([1, 100], dtype=torch.float64)
-        Uce_response = np.zeros((100, 768))
-        UPct_response = np.zeros((1, 100))
+        Uce_response = torch.zeros([100, 768], dtype=torch.float)
+        UPct_response = torch.zeros([1, 100], dtype=torch.float)
+        # Uce_response = np.zeros((100, 768))
+        # UPct_response = np.zeros((1, 100))
         response_mask = [1] * len(response) + ([0] * (100 - len(response)))
         for idx, values in enumerate(response):
             topic_id, topic_embedding, topic_prob = values[0], values[1], values[2]
             Uce_response[idx,:] = topic_embedding
-            UPct_response[0,idx] = torch.as_tensor(np.array(topic_prob).astype('float64'))
+            UPct_response[0,idx] = torch.as_tensor(topic_prob).to(device)
         all_Uce_response.append(Uce_response)
         all_UPct_response.append(UPct_response)
         all_response_mask.append(response_mask)
 
         # persona
-        # Uce_persona = torch.zeros([100, 768], dtype=torch.float64)
-        # UPct_persona = torch.zeros([1, 100], dtype=torch.float64)
-        Uce_persona = np.zeros((100, 768))
-        UPct_persona = np.zeros((1, 100))
+        Uce_persona = torch.zeros([100, 768], dtype=torch.float)
+        UPct_persona = torch.zeros([1, 100], dtype=torch.float)
+        # Uce_persona = np.zeros((100, 768))
+        # UPct_persona = np.zeros((1, 100))
         persona_mask = [1] * len(persona) + ([0] * (100 - len(persona)))
         for idx, values in enumerate(persona):
             topic_id, topic_embedding, topic_prob = values[0], values[1], values[2]
             Uce_persona[idx,:] = topic_embedding
-            UPct_persona[0,idx] = torch.as_tensor(np.array(topic_prob).astype('float64'))
+            UPct_persona[0,idx] = torch.as_tensor(topic_prob).to(device)
         all_Uce_persona.append(Uce_persona)
         all_UPct_persona.append(UPct_persona)
         all_persona_mask.append(persona_mask)
 
-    all_Uce_context = torch.tensor(np.array(all_Uce_context), dtype=torch.double)
-    all_UPct_context = torch.tensor(np.array(all_UPct_context), dtype=torch.double)
-    all_Uce_response = torch.tensor(np.array(all_Uce_response), dtype=torch.double)
-    all_UPct_response = torch.tensor(np.array(all_UPct_response), dtype=torch.double)
-    all_Uce_persona = torch.tensor(np.array(all_Uce_persona), dtype=torch.double)
-    all_UPct_persona = torch.tensor(np.array(all_UPct_persona), dtype=torch.double)
-    all_context_mask = torch.tensor(np.array(all_context_mask), dtype=torch.long)
-    all_response_mask = torch.tensor(np.array(all_response_mask), dtype=torch.long)
-    all_persona_mask = torch.tensor(np.array(all_persona_mask), dtype=torch.long)
+    # cprint("all_Uce_context: ", all_Uce_context)
+    # cprint("all_UPct_context: ", all_UPct_context)
+    # cprint("all_Uce_response: ", all_Uce_response)
+    # cprint("all_UPct_response: ", all_UPct_response)
+    # cprint("all_Uce_persona: ", all_Uce_persona)
+    # cprint("all_Uce_persona: ", all_Uce_persona)
+    # cprint("all_UPct_persona: ", all_UPct_persona)
+    # cprint("all_context_mask: ", all_context_mask)
+    # cprint("all_response_mask: ", all_response_mask)
+    # cprint("all_persona_mask: ", all_persona_mask)
 
-    cprint("all_Uce_context size: ", all_Uce_context.size(), "all_UPct_context size: ", all_UPct_context.size(), "all_context_mask: ", all_context_mask.size(),\
-           "all_Uce_response size: ", all_Uce_response.size(), "all_UPct_response size: ", all_UPct_response.size(), "all_response_mask: ", all_response_mask.size(),\
-           "all_Uce_persona size: ", all_Uce_persona.size(), "all_UPct_persona size: ", all_UPct_persona.size(), "all_persona_mask: ", all_persona_mask.size())
+    all_Uce_context = torch.stack(all_Uce_context, dim=0).to(device)
+    all_UPct_context = torch.stack(all_UPct_context, dim=0).to(device)
+    all_Uce_response = torch.stack(all_Uce_response, dim=0).to(device)
+    all_UPct_response = torch.stack(all_UPct_response, dim=0).to(device)
+    all_Uce_persona = torch.stack(all_Uce_persona, dim=0).to(device)
+    all_UPct_persona = torch.stack(all_UPct_persona, dim=0).to(device)
+
+    all_context_mask = torch.tensor(all_context_mask, dtype=torch.float).to(device)
+    all_response_mask = torch.tensor(all_response_mask, dtype=torch.float).to(device)
+    all_persona_mask = torch.tensor(all_persona_mask, dtype=torch.float).to(device)
+
+    # cprint("all_Uce_context size: ", all_Uce_context.size(), "all_UPct_context size: ", all_UPct_context.size(), "all_context_mask: ", all_context_mask.size(),\
+    #        "all_Uce_response size: ", all_Uce_response.size(), "all_UPct_response size: ", all_UPct_response.size(), "all_response_mask: ", all_response_mask.size(),\
+    #        "all_Uce_persona size: ", all_Uce_persona.size(), "all_UPct_persona size: ", all_UPct_persona.size(), "all_persona_mask: ", all_persona_mask.size())
     return all_Uce_context, all_UPct_context, all_context_mask, all_Uce_response, all_UPct_response, all_response_mask, all_Uce_persona, all_UPct_persona, all_persona_mask
 
 
