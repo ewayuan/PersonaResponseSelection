@@ -196,7 +196,9 @@ def main(config, progress):
     word_level_valid = create_context_and_response(word_level_valid)
     cprint("Sample context and response: ")
     cprint(word_level_train[0])
+    cprint("len(word_level_train): ", len(word_level_train))
     cprint(word_level_valid[0])
+    cprint("len(word_level_valid): ", len(word_level_valid))
 
     # convert to token ids
     cprint("Converting conversations to ids: ")
@@ -220,9 +222,10 @@ def main(config, progress):
     topic_embedding = load_pickle("./TopicModelling/topic_frequent_words_embedding.pkl")
     # train: (context, reponse, spearker)
     if not test_mode:
-        cached_context_topic_distribution_train_path = train_path.replace("train.pkl", "cached_context_topic_distribution_train.pkl")
-        cached_response_topic_distribution_train_path = train_path.replace("train.pkl", "cached_response_topic_distribution_train.pkl")
-        cached_persona_topic_distribution_train_path = train_path.replace("train.pkl", "cached_persona_topic_distribution_train.pkl")
+        cached_context_topic_distribution_train_path = train_path.replace(".pkl", "cached_context_topic_distribution_train.pkl")
+        cached_response_topic_distribution_train_path = train_path.replace(".pkl", "cached_response_topic_distribution_train.pkl")
+        cached_persona_topic_distribution_train_path = train_path.replace(".pkl", "cached_persona_topic_distribution_train.pkl")
+        cprint("cached_response_topic_distribution_train_path: ", cached_response_topic_distribution_train_path)
         if os.path.exists(cached_context_topic_distribution_train_path) and os.path.exists(cached_response_topic_distribution_train_path) and os.path.exists(cached_persona_topic_distribution_train_path):
             cprint("Loading Context and Response Topic Modelling for train...")
             context_topic_distribution_train = load_pickle(cached_context_topic_distribution_train_path)
@@ -231,6 +234,7 @@ def main(config, progress):
         else:
             cprint("Create Context and Response Topic Modelling for train...")
             topic_modelling_train = create_context_and_response_topic_modelling(train)
+            cprint("topic_modelling_train: ", len(topic_modelling_train))
             # topic_modelling_train: [(topic_distribution_of_context: List, topic_distribution_of_response: List, speaker)]
             context_topic_distribution_train, response_topic_distribution_train, persona_topic_distribution_train = \
                 generate_data_topic_distribuition(topic_modelling_train, persona, lda, common_dict)
@@ -252,9 +256,9 @@ def main(config, progress):
         # all_Uce_response_train, all_UPct_response_train, all_response_topic_mask_train,\
         # all_Uce_persona_train, all_UPct_persona_train, all_persona_topic_mask_train = convert_topic_embedding_matrix(topic_embedding_train)
 
-    cached_context_topic_distribution_valid_path = "cached_context_topic_distribution_valid.pkl"
-    cached_response_topic_distribution_valid_path = "cached_response_topic_distribution_valid.pkl"
-    cached_persona_topic_distribution_valid_path = "cached_persona_topic_distribution_valid.pkl"
+    cached_context_topic_distribution_valid_path = valid_path.replace(".pkl", "cached_context_topic_distribution_valid.pkl")
+    cached_response_topic_distribution_valid_path = valid_path.replace(".pkl", "cached_response_topic_distribution_valid.pkl")
+    cached_persona_topic_distribution_valid_path = valid_path.replace(".pkl", "cached_persona_topic_distribution_valid.pkl")
     if os.path.exists(cached_context_topic_distribution_valid_path) and os.path.exists(cached_response_topic_distribution_valid_path) and os.path.exists(cached_persona_topic_distribution_valid_path):
         cprint("Loading Context and Response Topic Modelling for valid...")
         context_topic_distribution_valid = load_pickle(cached_context_topic_distribution_valid_path)
@@ -310,6 +314,7 @@ def main(config, progress):
     cprint("all_persona_ids_train: ", all_persona_ids_train.size())
     cprint("all_persona_attention_mask_train: ", all_persona_attention_mask_train.size())
     cprint("all_persona_token_type_ids_train: ", all_persona_token_type_ids_train.size())
+
     cprint("context_topic_distribution_train: ", context_topic_distribution_train.size())
     cprint("response_topic_distribution_train: ", response_topic_distribution_train.size())
     cprint("persona_topic_distribution_train: ", persona_topic_distribution_train.size())
@@ -392,7 +397,7 @@ def main(config, progress):
 
         if fp16:
             model, optimizer = amp.initialize(model, optimizer, opt_level=fp16_opt_level)
-            models[i] = model
+            models[i] = nn.DataParallel(model, device_ids=[0,1,2])
         optimizers.append(optimizer)
 
         if not test_mode:
@@ -525,11 +530,11 @@ if __name__ == "__main__":
         cprint(config)
         output = main(config, progress=1)
         cprint("-"*80)
-        cprint(output["config"])
-        cprint(output["epoch"])
-        cprint(output["score"])
-        cprint(output["recall"])
-        cprint(output["MRR"])
+        cprint("config: ", output["config"])
+        cprint("epoch: ", output["epoch"])
+        cprint("score: ", output["score"])
+        cprint("recall: ", output["recall"])
+        cprint("MRR: ", output["MRR"])
     else:
         all_configs = []
         for i, r in enumerate(itertools.product(*parameters_to_search.values())):
