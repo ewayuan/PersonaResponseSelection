@@ -17,7 +17,7 @@ nlp = English()
 # tokenizer = nlp.tokenizer
 
 def perona_preprocissing(data_set):
-    persona_path = "./cleaned/" + str(data_set) + "/persona.txt"
+    persona_path = "./cleaned/" + str(data_set) + "/persona_mini.txt"
     lines = open(persona_path,'r').read().splitlines()
     persona_dict = {}
     lineToSkip = -1
@@ -61,6 +61,8 @@ def data_preprocssing(data_set, data_type):
         if partitioned_line[1].strip() == '---+---':
             user_name = partitioned_line[0].strip()
             user_content = partitioned_line[2].strip()
+            if user_content == "":
+                continue
             # Split into list of sentences
             content = spacy_nlp(user_content)
             for sent in content.sents:
@@ -80,27 +82,27 @@ def data_preprocssing(data_set, data_type):
 persona_start = time.time()
 happy_persona = perona_preprocissing("happy")
 # print("happy_persona: ", happy_persona)
-save_pickle(happy_persona, "./data/reddit_empathetic/happy/happy_persona.pkl")
+save_pickle(happy_persona, "./data/reddit_empathetic/happy/happy_persona_mini.pkl")
 persona_end = time.time()
 print("persona processing time: ", persona_end - persona_start)
 
 test_start = time.time()
-happy_test_data = data_preprocssing("happy", "test")
+happy_test_data = data_preprocssing("happy", "test_mini")
 # print("happy_test_data: ", happy_test_data)
-save_pickle(happy_test_data, "./data/reddit_empathetic/happy/happy_test.pkl")
+save_pickle(happy_test_data, "./data/reddit_empathetic/happy/happy_test_mini.pkl")
 test_end = time.time()
 print("test processing time: ", test_end - test_start)
 
 valid_start = time.time()
-happy_valid_data = data_preprocssing("happy", "valid")
-save_pickle(happy_valid_data, "./data/reddit_empathetic/happy/happy_valid.pkl")
+happy_valid_data = data_preprocssing("happy", "valid_mini")
+save_pickle(happy_valid_data, "./data/reddit_empathetic/happy/happy_valid_mini.pkl")
 valid_end = time.time()
 print("valid processing time: ", valid_end - valid_start)
 
 
 train_start = time.time()
-happy_train_data = data_preprocssing("happy", "train")
-save_pickle(happy_train_data, "./data/reddit_empathetic/happy/happy_train.pkl")
+happy_train_data = data_preprocssing("happy", "train_mini")
+save_pickle(happy_train_data, "./data/reddit_empathetic/happy/happy_train_mini.pkl")
 train_end = time.time()
 print("train processing time: ", train_end - train_start)
 
