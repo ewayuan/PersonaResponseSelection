@@ -24,8 +24,6 @@ from tqdm import tqdm
 from transformers import AdamW, BertModel, BertTokenizer, get_linear_schedule_with_warmup
 
 from util import load_pickle, save_pickle, count_parameters, compute_metrics, compute_metrics_from_logits
-from torch.utils.data.distributed import DistributedSampler
-
 from functions import *
 
 from gensim.models import LdaModel
@@ -98,12 +96,6 @@ def main(config, progress):
 
     if test_mode and load_model_path == "":
         raise ValueError("Must specify test model path when in test mode!")
-
-    torch.distributed.init_process_group(backend="nccl")
-    # 2） 配置每个进程的gpu
-    local_rank = torch.distributed.get_rank()  # 也可以通过设置args.local_rank得到（见下文）
-    torch.cuda.set_device(local_rank)
-    device = torch.device("cuda", local_rank)
 
     # load data
     cprint("Loading conversation data...")
@@ -340,13 +332,12 @@ def main(config, progress):
     cprint("response_topic_distribution_valid: ", response_topic_distribution_valid.size())
     cprint("persona_topic_distribution_valid: ", persona_topic_distribution_valid.size())
 
-
     if not test_mode:
         train_dataset = TensorDataset(all_context_ids_train, all_context_attention_mask_train, all_context_token_type_ids_train, \
                                       all_response_ids_train, all_response_attention_mask_train, all_response_token_type_ids_train, \
                                       all_persona_ids_train, all_persona_attention_mask_train, all_persona_token_type_ids_train,\
                                       context_topic_distribution_train, response_topic_distribution_train, persona_topic_distribution_train)
-        train_sampler = DistributedSampler(train_dataset)
+        train_sampler = RandomSampler(train_dataset)
         train_dataloader = DataLoader(train_dataset, sampler=train_sampler, batch_size=batch_size, drop_last=True)
         t_total = len(train_dataloader) // gradient_accumulation_steps * epochs
 
@@ -354,7 +345,7 @@ def main(config, progress):
                                   all_response_ids_valid, all_response_attention_mask_valid, all_response_token_type_ids_valid, \
                                   all_persona_ids_valid, all_persona_attention_mask_valid, all_persona_token_type_ids_valid,\
                                   context_topic_distribution_valid, response_topic_distribution_valid, persona_topic_distribution_valid)
-    valid_sampler = DistributedSampler(valid_dataset)
+    valid_sampler = RandomSampler(valid_dataset)
     valid_dataloader = DataLoader(valid_dataset, sampler=valid_sampler, batch_size=num_candidates)
 
 
@@ -363,7 +354,6 @@ def main(config, progress):
     model = BertModel.from_pretrained(model, output_hidden_states=output_hidden_states)
     cprint(model)
     cprint("number of parameters: ", count_parameters(model))
-
 
     if shared: # responses, persona, context share same bert, else, they can have their own bert models.
         cprint("number of encoders: 1")
@@ -407,7 +397,7 @@ def main(config, progress):
 
         if fp16:
             model, optimizer = amp.initialize(model, optimizer, opt_level=fp16_opt_level)
-            models[i] = nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)
+            models[i] = nn.DataParallel(model, device_ids=[0,1,2])
         optimizers.append(optimizer)
 
         if not test_mode:
