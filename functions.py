@@ -326,7 +326,7 @@ def cnn_contxt_response(matrix):
     Z = Z.view(Z.size(0), -1)
     # print("Z55: ", Z.shape)
 
-    output_V = tanh(affine_context_response(Z))
+    output_V = affine_context_response(Z)
 
     return output_V
 
@@ -356,7 +356,7 @@ def cnn_persona_response(matrix):
     Z = Z.view(Z.size(0), -1)
     # print("Z5: ", Z.shape)
 
-    output_V = tanh(affine_context_response(Z))
+    output_V = affine_context_response(Z)
     return output_V
 
 def fuse(batch_context_emb, batch_response_emb, batch_persona_emb, \
