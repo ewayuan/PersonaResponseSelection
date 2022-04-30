@@ -116,16 +116,18 @@ def main(config, progress):
     cprint ("Creating Word Level Embedding ...")
     # tokenization
     cprint("Tokenizing ...")
-    tokenizer = BertTokenizer.from_pretrained(model)
+    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
     cached_tokenized_train_path = train_path.replace(".pkl", "_tokenized.pkl")
     cached_tokenized_valid_path = valid_path.replace(".pkl", "_tokenized.pkl")
     if os.path.exists(cached_tokenized_train_path):
         cprint("Loading tokenized dataset from ", cached_tokenized_train_path)
         word_level_train = load_pickle(cached_tokenized_train_path)
+        cprint("after tokenize_conversations: ", word_level_train[99])
     else:
         word_level_train = tokenize_conversations(train, tokenizer, max_sent_len)
+        cprint("after tokenize_conversations: ", word_level_train[99])
         cprint("Saving tokenized dataset to ", cached_tokenized_train_path)
-        save_pickle(train, cached_tokenized_train_path)
+        save_pickle(word_level_train, cached_tokenized_train_path)
 
     if os.path.exists(cached_tokenized_valid_path):
         cprint("Loading tokenized dataset from ", cached_tokenized_valid_path)
@@ -133,7 +135,7 @@ def main(config, progress):
     else:
         word_level_valid = tokenize_conversations(valid, tokenizer, max_sent_len)
         cprint("Saving tokenized dataset to ", cached_tokenized_valid_path)
-        save_pickle(valid, cached_tokenized_valid_path)
+        save_pickle(word_level_valid, cached_tokenized_valid_path)
 
     persona = None
     if num_personas > 0:
@@ -192,6 +194,7 @@ def main(config, progress):
     #         cprint("number of speakers after merging PEC and casual: ", len(persona))
 
     # create context and response
+    cprint("before create_context_and_response: ", len(word_level_train))
     word_level_train = create_context_and_response(word_level_train)
     word_level_valid = create_context_and_response(word_level_valid)
     cprint("Sample context and response: ")
@@ -215,6 +218,11 @@ def main(config, progress):
 
 
     # Topic Modelling
+    # processing topic level persona
+    all_speakers = set([s for conv in load_pickle(config["train_path"]) + \
+                load_pickle(config["valid_path"]) + load_pickle(config["test_path"]) for s, sent in conv])
+    topic_level_persona = merge_persona_token_to_sents (persona, all_speakers, num_personas)
+    #
     cprint("Creating Topic Modelling ...")
     model_path = "model_100"
     lda = LdaModel.load(datapath(model_path))
@@ -237,7 +245,7 @@ def main(config, progress):
             cprint("topic_modelling_train: ", len(topic_modelling_train))
             # topic_modelling_train: [(topic_distribution_of_context: List, topic_distribution_of_response: List, speaker)]
             context_topic_distribution_train, response_topic_distribution_train, persona_topic_distribution_train = \
-                generate_data_topic_distribuition(topic_modelling_train, persona, lda, common_dict)
+                generate_data_topic_distribuition(topic_modelling_train, topic_level_persona, lda, common_dict)
             save_pickle(context_topic_distribution_train, cached_context_topic_distribution_train_path)
             save_pickle(response_topic_distribution_train, cached_response_topic_distribution_train_path)
             save_pickle(persona_topic_distribution_train, cached_persona_topic_distribution_train_path)
@@ -269,7 +277,7 @@ def main(config, progress):
         topic_modelling_valid = create_context_and_response_topic_modelling(valid)
         # topic_modelling_valid: [(topic_distribution_of_context: List, topic_distribution_of_response: List, speaker)]
         context_topic_distribution_valid, response_topic_distribution_valid, persona_topic_distribution_valid = \
-            generate_data_topic_distribuition(topic_modelling_valid, persona, lda, common_dict)
+            generate_data_topic_distribuition(topic_modelling_valid, topic_level_persona, lda, common_dict)
         save_pickle(context_topic_distribution_valid, cached_context_topic_distribution_valid_path)
         save_pickle(response_topic_distribution_valid, cached_response_topic_distribution_valid_path)
         save_pickle(persona_topic_distribution_valid, cached_persona_topic_distribution_valid_path)
@@ -286,8 +294,8 @@ def main(config, progress):
 
     # Create word_level_train Dataloader & topic_embedding_train Dataloader
 
-    # cprint("Create word_level_train Dataloader & topic_embedding_train Dataloader...")
-    # cprint("all_context_ids_valid: ", all_context_ids_valid.size())
+    cprint("Create word_level_train Dataloader & topic_embedding_train Dataloader...")
+    cprint("all_context_ids_valid: ", all_context_ids_valid.size())
     # cprint("all_context_attention_mask_valid: ", all_context_attention_mask_valid.size())
     # cprint("all_context_token_type_ids_valid: ", all_context_token_type_ids_valid.size())
     # cprint("all_persona_ids_valid: ", all_persona_ids_valid.size())
@@ -306,6 +314,7 @@ def main(config, progress):
     # cprint("all_response_topic_mask_valid: ", all_response_topic_mask_valid.size())
     # cprint("all_persona_topic_mask_valid: ", all_persona_topic_mask_valid.size())
     cprint("all_context_ids_train: ", all_context_ids_train.size())
+
     cprint("all_context_attention_mask_train: ", all_context_attention_mask_train.size())
     cprint("all_context_token_type_ids_train: ", all_context_token_type_ids_train.size())
     cprint("all_response_ids_train: ", all_response_ids_train.size())
@@ -351,7 +360,9 @@ def main(config, progress):
 
     # Create model
     cprint("Building dmodel...")
-    model = BertModel.from_pretrained(model, output_hidden_states=output_hidden_states)
+    bert_model = BertModel.from_pretrained(model, output_hidden_states=output_hidden_states).to(device)
+
+    model = ourModel(device, args=args)
     cprint(model)
     cprint("number of parameters: ", count_parameters(model))
 
@@ -386,18 +397,18 @@ def main(config, progress):
     optimizers = []
     schedulers = []
     for i, model in enumerate(models):
-        optimizer_grouped_parameters = [
-            {
-                "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
-                "weight_decay": weight_decay,
-            },
-            {"params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)], "weight_decay": 0.0},
-        ]
-        optimizer = AdamW(optimizer_grouped_parameters, lr=lr, eps=1e-8)
+        # optimizer_grouped_parameters = [
+        #     {
+        #         "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
+        #         "weight_decay": weight_decay,
+        #     },
+        #     {"params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)], "weight_decay": 0.0},
+        # ]
+        optimizer = AdamW(model.parameters(), lr=lr, eps=1e-8, weight_decay=0)
 
         if fp16:
             model, optimizer = amp.initialize(model, optimizer, opt_level=fp16_opt_level)
-            models[i] = nn.DataParallel(model, device_ids=[0,1,2])
+            # models[i] = nn.DataParallel(model, device_ids=[0,1,2])
         optimizers.append(optimizer)
 
         if not test_mode:
@@ -412,7 +423,7 @@ def main(config, progress):
             model.eval()
         valid_iterator = tqdm(valid_dataloader, desc="Iteration")
         valid_loss, (valid_acc, valid_recall, valid_MRR) = evaluate_epoch(valid_iterator, models, \
-            num_personas, gradient_accumulation_steps, device, dataset, 0, apply_interaction, matching_method, aggregation_method)
+            num_personas, gradient_accumulation_steps, device, dataset, 0, apply_interaction, matching_method, aggregation_method, bert_model)
         cprint("test loss: {0:.4f}, test acc: {1:.4f}, test recall: {2}, test MRR: {3:.4f}"
             .format(valid_loss, valid_acc, valid_recall, valid_MRR))
         sys.exit()
@@ -436,7 +447,7 @@ def main(config, progress):
         train_iterator = tqdm(train_dataloader, desc="Iteration")
 
         train_loss, (train_acc, _, _) = train_epoch(train_iterator, models, num_personas, optimizers, \
-            schedulers, gradient_accumulation_steps, device, fp16, amp, apply_interaction, matching_method, aggregation_method, topic_embedding)
+            schedulers, gradient_accumulation_steps, device, fp16, amp, apply_interaction, matching_method, aggregation_method, topic_embedding, bert_model)
         epoch_train_losses.append(train_loss)
 
         # evaluation
@@ -444,7 +455,7 @@ def main(config, progress):
             model.eval()
         valid_iterator = tqdm(valid_dataloader, desc="Iteration")
         valid_loss, (valid_acc, valid_recall, valid_MRR) = evaluate_epoch(valid_iterator, models, \
-            num_personas, gradient_accumulation_steps, device, dataset, epoch, apply_interaction, matching_method, aggregation_method, topic_embedding)
+            num_personas, gradient_accumulation_steps, device, dataset, epoch, apply_interaction, matching_method, aggregation_method, topic_embedding, bert_model)
 
         cprint("Config id: {7}, Epoch {0}: train loss: {1:.4f}, valid loss: {2:.4f}, train_acc: {3:.4f}, valid acc: {4:.4f}, valid recall: {5}, valid_MRR: {6:.4f}"
             .format(epoch+1, train_loss, valid_loss, train_acc, valid_acc, valid_recall, valid_MRR, config_id))
@@ -474,6 +485,7 @@ def main(config, progress):
 
     if save_model_path:
         cprint("Saving model to ", save_model_path)
+        # cprint("best_model_statedict: ", best_model_statedict)
         torch.save(best_model_statedict, save_model_path)
 
     return metrics
