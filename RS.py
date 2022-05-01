@@ -313,33 +313,33 @@ def main(config, progress):
     # cprint("all_context_topic_mask_valid: ", all_context_topic_mask_valid.size())
     # cprint("all_response_topic_mask_valid: ", all_response_topic_mask_valid.size())
     # cprint("all_persona_topic_mask_valid: ", all_persona_topic_mask_valid.size())
-    cprint("all_context_ids_train: ", all_context_ids_train.size())
-
-    cprint("all_context_attention_mask_train: ", all_context_attention_mask_train.size())
-    cprint("all_context_token_type_ids_train: ", all_context_token_type_ids_train.size())
-    cprint("all_response_ids_train: ", all_response_ids_train.size())
-    cprint("all_response_attention_mask_train: ", all_response_attention_mask_train.size())
-    cprint("all_response_token_type_ids_train: ", all_response_token_type_ids_train.size())
-    cprint("all_persona_ids_train: ", all_persona_ids_train.size())
-    cprint("all_persona_attention_mask_train: ", all_persona_attention_mask_train.size())
-    cprint("all_persona_token_type_ids_train: ", all_persona_token_type_ids_train.size())
-
-    cprint("context_topic_distribution_train: ", context_topic_distribution_train.size())
-    cprint("response_topic_distribution_train: ", response_topic_distribution_train.size())
-    cprint("persona_topic_distribution_train: ", persona_topic_distribution_train.size())
-
-    cprint("all_context_ids_valid: ", all_context_ids_valid.size())
-    cprint("all_context_attention_mask_valid: ", all_context_attention_mask_valid.size())
-    cprint("all_context_token_type_ids_valid: ", all_context_token_type_ids_valid.size())
-    cprint("all_response_ids_valid: ", all_response_ids_valid.size())
-    cprint("all_response_attention_mask_valid: ", all_response_attention_mask_valid.size())
-    cprint("all_response_token_type_ids_valid: ", all_response_token_type_ids_valid.size())
-    cprint("all_persona_ids_valid: ", all_persona_ids_valid.size())
-    cprint("all_persona_attention_mask_valid: ", all_persona_attention_mask_valid.size())
-    cprint("all_persona_token_type_ids_valid: ", all_persona_token_type_ids_valid.size())
-    cprint("context_topic_distribution_valid: ", context_topic_distribution_valid.size())
-    cprint("response_topic_distribution_valid: ", response_topic_distribution_valid.size())
-    cprint("persona_topic_distribution_valid: ", persona_topic_distribution_valid.size())
+    # cprint("all_context_ids_train: ", all_context_ids_train.size())
+    #
+    # cprint("all_context_attention_mask_train: ", all_context_attention_mask_train.size())
+    # cprint("all_context_token_type_ids_train: ", all_context_token_type_ids_train.size())
+    # cprint("all_response_ids_train: ", all_response_ids_train.size())
+    # cprint("all_response_attention_mask_train: ", all_response_attention_mask_train.size())
+    # cprint("all_response_token_type_ids_train: ", all_response_token_type_ids_train.size())
+    # cprint("all_persona_ids_train: ", all_persona_ids_train.size())
+    # cprint("all_persona_attention_mask_train: ", all_persona_attention_mask_train.size())
+    # cprint("all_persona_token_type_ids_train: ", all_persona_token_type_ids_train.size())
+    #
+    # cprint("context_topic_distribution_train: ", context_topic_distribution_train.size())
+    # cprint("response_topic_distribution_train: ", response_topic_distribution_train.size())
+    # cprint("persona_topic_distribution_train: ", persona_topic_distribution_train.size())
+    #
+    # cprint("all_context_ids_valid: ", all_context_ids_valid.size())
+    # cprint("all_context_attention_mask_valid: ", all_context_attention_mask_valid.size())
+    # cprint("all_context_token_type_ids_valid: ", all_context_token_type_ids_valid.size())
+    # cprint("all_response_ids_valid: ", all_response_ids_valid.size())
+    # cprint("all_response_attention_mask_valid: ", all_response_attention_mask_valid.size())
+    # cprint("all_response_token_type_ids_valid: ", all_response_token_type_ids_valid.size())
+    # cprint("all_persona_ids_valid: ", all_persona_ids_valid.size())
+    # cprint("all_persona_attention_mask_valid: ", all_persona_attention_mask_valid.size())
+    # cprint("all_persona_token_type_ids_valid: ", all_persona_token_type_ids_valid.size())
+    # cprint("context_topic_distribution_valid: ", context_topic_distribution_valid.size())
+    # cprint("response_topic_distribution_valid: ", response_topic_distribution_valid.size())
+    # cprint("persona_topic_distribution_valid: ", persona_topic_distribution_valid.size())
 
     if not test_mode:
         train_dataset = TensorDataset(all_context_ids_train, all_context_attention_mask_train, all_context_token_type_ids_train, \
@@ -422,8 +422,7 @@ def main(config, progress):
         for model in models:
             model.eval()
         valid_iterator = tqdm(valid_dataloader, desc="Iteration")
-        valid_loss, (valid_acc, valid_recall, valid_MRR) = evaluate_epoch(valid_iterator, models, \
-            num_personas, gradient_accumulation_steps, device, dataset, 0, apply_interaction, matching_method, aggregation_method, bert_model)
+        valid_loss, (valid_acc, valid_recall, valid_MRR) = evaluate_epoch(valid_iterator, models, num_personas, gradient_accumulation_steps, device, dataset, 0, apply_interaction, matching_method, aggregation_method, topic_embedding,  bert_model)
         cprint("test loss: {0:.4f}, test acc: {1:.4f}, test recall: {2}, test MRR: {3:.4f}"
             .format(valid_loss, valid_acc, valid_recall, valid_MRR))
         sys.exit()
