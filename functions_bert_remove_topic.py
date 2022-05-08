@@ -62,7 +62,7 @@ class TransformerBlock(nn.Module):
     def FFN(self, X):
         return self.linear2(self.relu(self.linear1(X)))
 
-    def forward(self, Q, K, V, episilon=1e-8):
+    def forward(self, Q, K, V, mask=None, dropout=None, episilon=1e-8):
         '''
         :param Q: (batch_size, max_r_words, embedding_dim)
         :param K: (batch_size, max_u_words, embedding_dim)
@@ -72,8 +72,16 @@ class TransformerBlock(nn.Module):
         dk = torch.Tensor([max(1.0, Q.size(-1))]).cuda()
 
         Q_K = Q.bmm(K.permute(0, 2, 1)) / (torch.sqrt(dk) + episilon)
+        if mask is not None:
+            Q_K = Q_K.mask_fill(mask==0, -1e9)
+
         Q_K_score = F.softmax(Q_K, dim=-1)  # (batch_size, max_r_words, max_u_words)
+
+        if dropout is not None:
+            Q_K_score = dropout(Q_K_score)
+
         V_att = Q_K_score.bmm(V)
+
         if self.is_layer_norm:
             X = self.layer_morm(Q + V_att)  # (batch_size, max_r_words, embedding_dim)
             output = self.layer_morm(self.FFN(X) + X)
@@ -82,6 +90,7 @@ class TransformerBlock(nn.Module):
             output = self.FFN(X) + X
 
         return output
+
 
 class cnnBlock(nn.Module):
     def __init__(self):
@@ -586,13 +595,42 @@ class ourModel (nn.Module):
 
         # context_response_attn_similarity_matrix = torch.bmm(context_attn_output, response_attn_output.transpose(1,2))
         # context_response_attn_similarity_matrix = context_response_attn_similarity_matrix.masked_fill_(context_response_attn_mask, 0)
+        # cprint("batch_context_emb: ", batch_context_emb)
+        # cprint("batch_response_emb: ", batch_response_emb)
+        # cprint("batch_response_emb: ", batch_response_emb)
+        #
+        # cprint("batch_context_emb: ", batch_context_emb.shape)
+        # cprint("batch_response_emb: ", batch_response_emb.shape)
+        # cprint("batch_response_emb: ", batch_response_emb.shape)
+        #
+        # cprint("batch_context_emb: ", batch_context_mask.shape)
+        # cprint("batch_response_emb: ", batch_context_mask.shape)
+        # cprint("batch_response_emb: ", batch_context_mask.shape)
+        #
+        # batch_context_mask_ = batch_context_mask.unsqueeze(-1).expand(batch_context_emb.size()).bool()
+        # batch_response_mask_ = batch_response_mask.unsqueeze(-1).expand(batch_response_emb.size()).bool()
+        # batch_persona_mask_ = batch_persona_mask.unsqueeze(-1).expand(batch_persona_emb.size()).bool()
+        #
+        #
+        # batch_context_emb_ = batch_context_emb.masked_fill_(~batch_context_mask_, 0)
+        # batch_response_emb_ = batch_response_emb.masked_fill_(~batch_response_mask_, 0)
+        # batch_persona_emb_ = batch_persona_mask.masked_fill_(~batch_persona_mask_, 0)
+        #
+        # cprint("batch_context_emb: ", batch_context_emb_)
+        # cprint("batch_response_emb: ", batch_response_emb_)
+        # cprint("batch_response_emb: ", batch_response_emb_)
+        # cprint("batch_response_emb: ", batch_response_embs)
 
+        context_response_attn_mask_ = ~torch.bmm(batch_context_mask.unsqueeze(-1), batch_response_mask.unsqueeze(1)).bool()
         context_response_similarity_matrix = torch.bmm(batch_context_emb, batch_response_emb.transpose(1,2))
-        # context_response_similarity_matrix = context_response_similarity_matrix.masked_fill_(context_response_attn_mask, 0)
+        context_response_similarity_matrix = context_response_similarity_matrix.masked_fill_(context_response_attn_mask_, 0)
+
         # persona_response_attn_similarity_matrix = torch.bmm(persona_attn_output, response_attn_output.transpose(1,2))
         # persona_response_attn_similarity_matrix = persona_response_attn_similarity_matrix.masked_fill_(persona_response_attn_mask, 0)
+
+        persona_response_attn_mask_ = ~torch.bmm(batch_persona_mask.unsqueeze(-1), batch_response_mask.unsqueeze(1)).bool()
         persona_response_similarity_matrix = torch.bmm(batch_persona_emb, batch_response_emb.transpose(1,2))
-        # persona_response_similarity_matrix = persona_response_similarity_matrix.masked_fill_(persona_response_attn_mask, 0)
+        persona_response_similarity_matrix = persona_response_similarity_matrix.masked_fill_(persona_response_attn_mask_, 0)
 
 
 
