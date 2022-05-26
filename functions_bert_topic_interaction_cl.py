@@ -353,20 +353,19 @@ class ourModel (nn.Module):
             targets = torch.eye(batch_size, device=batch[0].device).reshape(batch_size, num_candidates)
             # cprint("targets: ", targets)
             # reporter.report()
-            logits = context_model.module.forward (batch_context_emb, batch_response_emb, batch_persona_emb, \
+            logits, logits_cl = context_model.module.forward (batch_context_emb, batch_response_emb, batch_persona_emb, \
                            batch_context_mask, batch_response_mask, batch_persona_mask, \
                            batch_Uce_context, batch_UPct_context, batch_Uce_response, \
                            batch_UPct_response, batch_Uce_persona, batch_UPct_persona, \
                            batch_context_topic_mask, batch_response_topic_mask, batch_persona_topic_mask, \
                            batch_size, num_candidates, device)
             logits = logits.reshape(batch_size, num_candidates)
-            loss = F.cross_entropy(logits, targets)
+            loss = F.cross_entropy(logits, targets) + F.cross_entropy(logits_cl, targets)
             # loss = F.binary_cross_entropy_with_logits(logits, targets)
             num_ok = (torch.arange(batch_size, device=batch[0].device).long() == logits.float().argmax(dim=1)).sum()
             ok += num_ok.item()
             total += batch[0].shape[0]
             # reporter.report()
-            del logits
             if gradient_accumulation_steps > 1:
                 loss = loss / gradient_accumulation_steps
             if fp16:
@@ -508,7 +507,7 @@ class ourModel (nn.Module):
                         Uce_persona = batch_Uce_persona[i:i+1].repeat_interleave(num_candidates, dim=0)
                         UPct_persona = batch_UPct_persona[i:i+1].repeat_interleave(num_candidates, dim=0)
                         persona_topic_mask = batch_persona_topic_mask[i:i+1].repeat_interleave(num_candidates, dim=0)
-                    logits_single = context_model (context_emb, batch_response_emb, persona_emb, \
+                    logits_single, _ = context_model.module.forward  (context_emb, batch_response_emb, persona_emb, \
                                           context_mask, batch_response_mask, persona_mask, \
                                           Uce_context, UPct_context, batch_Uce_response, \
                                           batch_UPct_response, Uce_persona, UPct_persona, \
@@ -632,9 +631,26 @@ class ourModel (nn.Module):
         # cprint("context_response_word_level_attn_simialrity_matrix: ",context_response_word_level_attn_simialrity_matrix)
         # cprint("persona_response_word_level_attn_simialrity_matrix: ",persona_response_word_level_attn_simialrity_matrix)
 
-        return self.cnn_block(context_response_attn_similarity_matrix, context_response_similarity_matrix,\
+        logits = self.cnn_block(context_response_attn_similarity_matrix, context_response_similarity_matrix,\
                                 persona_response_attn_similarity_matrix, persona_response_similarity_matrix,\
-                              context_response_word_level_attn_simialrity_matrix, persona_response_word_level_attn_simialrity_matrix).squeeze()
+                                context_response_word_level_attn_simialrity_matrix, persona_response_word_level_attn_simialrity_matrix).squeeze()
+
+        batch_response_emb_unique = batch_response_emb[:batch_size]
+        response_attn_output_unique = response_attn_output[:batch_size]
+        batch_response_emb_ = (batch_response_emb_unique * batch_response_mask[:batch_size].unsqueeze(-1)).sum(dim=1)/batch_response_mask[:batch_size].sum(dim=-1, keepdim=True).clamp(min=1)
+        response_attn_output_ = (response_attn_output_unique * batch_response_mask[:batch_size].unsqueeze(-1)).sum(dim=1)/batch_response_mask[:batch_size].sum(dim=-1, keepdim=True).clamp(min=1)
+
+        batch_response_emb_normal = F.normalize(batch_response_emb_, dim=1)
+        response_attn_output_normal = F.normalize(response_attn_output_, dim=1)
+
+        similarity_matrix_response_cl = torch.matmul(batch_response_emb_normal, response_attn_output_normal.T)
+        similarity_matrix = torch.matmul(batch_response_emb_normal, batch_response_emb_normal.T)
+
+        mask_cl = torch.eye(batch_size).to(device)
+        logits_cl = (similarity_matrix_response_cl * mask_cl + similarity_matrix *  (1-mask_cl)) /0.07
+
+
+        return logits, logits_cl
 
 
 

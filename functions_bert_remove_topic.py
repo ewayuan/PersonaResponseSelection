@@ -623,14 +623,14 @@ class ourModel (nn.Module):
 
         context_response_attn_mask_ = ~torch.bmm(batch_context_mask.unsqueeze(-1), batch_response_mask.unsqueeze(1)).bool()
         context_response_similarity_matrix = torch.bmm(batch_context_emb, batch_response_emb.transpose(1,2))
-        context_response_similarity_matrix = context_response_similarity_matrix.masked_fill_(context_response_attn_mask_, 0)
+        # context_response_similarity_matrix = context_response_similarity_matrix.masked_fill_(context_response_attn_mask_, 0)
 
         # persona_response_attn_similarity_matrix = torch.bmm(persona_attn_output, response_attn_output.transpose(1,2))
         # persona_response_attn_similarity_matrix = persona_response_attn_similarity_matrix.masked_fill_(persona_response_attn_mask, 0)
 
         persona_response_attn_mask_ = ~torch.bmm(batch_persona_mask.unsqueeze(-1), batch_response_mask.unsqueeze(1)).bool()
         persona_response_similarity_matrix = torch.bmm(batch_persona_emb, batch_response_emb.transpose(1,2))
-        persona_response_similarity_matrix = persona_response_similarity_matrix.masked_fill_(persona_response_attn_mask_, 0)
+        # persona_response_similarity_matrix = persona_response_similarity_matrix.masked_fill_(persona_response_attn_mask_, 0)
 
 
 

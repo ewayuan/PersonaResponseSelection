@@ -24,7 +24,7 @@ from tqdm import tqdm
 from transformers import AdamW, BertModel, BertTokenizer, get_linear_schedule_with_warmup
 
 from util import load_pickle, save_pickle, count_parameters, compute_metrics, compute_metrics_from_logits
-from functions_bert_topic import *
+from functions_bert import *
 
 from gensim.models import LdaModel
 from pprint import pprint
@@ -227,6 +227,7 @@ def main(config, progress):
     model_path = "model_100"
     lda = LdaModel.load(datapath(model_path))
     common_dict = load_pickle("./TopicModelling/dialog_data_dic.p")
+    topic_embedding = load_pickle("./TopicModelling/topic_frequent_words_embedding.pkl")
     # train: (context, reponse, spearker)
     if not test_mode:
         cached_context_topic_distribution_train_path = train_path.replace(".pkl", "cached_context_topic_distribution_train.pkl")
@@ -312,33 +313,33 @@ def main(config, progress):
     # cprint("all_context_topic_mask_valid: ", all_context_topic_mask_valid.size())
     # cprint("all_response_topic_mask_valid: ", all_response_topic_mask_valid.size())
     # cprint("all_persona_topic_mask_valid: ", all_persona_topic_mask_valid.size())
-    # cprint("all_context_ids_train: ", all_context_ids_train.size())
-    #
-    # cprint("all_context_attention_mask_train: ", all_context_attention_mask_train.size())
-    # cprint("all_context_token_type_ids_train: ", all_context_token_type_ids_train.size())
-    # cprint("all_response_ids_train: ", all_response_ids_train.size())
-    # cprint("all_response_attention_mask_train: ", all_response_attention_mask_train.size())
-    # cprint("all_response_token_type_ids_train: ", all_response_token_type_ids_train.size())
-    # cprint("all_persona_ids_train: ", all_persona_ids_train.size())
-    # cprint("all_persona_attention_mask_train: ", all_persona_attention_mask_train.size())
-    # cprint("all_persona_token_type_ids_train: ", all_persona_token_type_ids_train.size())
-    #
-    # cprint("context_topic_distribution_train: ", context_topic_distribution_train.size())
-    # cprint("response_topic_distribution_train: ", response_topic_distribution_train.size())
-    # cprint("persona_topic_distribution_train: ", persona_topic_distribution_train.size())
-    #
-    # cprint("all_context_ids_valid: ", all_context_ids_valid.size())
-    # cprint("all_context_attention_mask_valid: ", all_context_attention_mask_valid.size())
-    # cprint("all_context_token_type_ids_valid: ", all_context_token_type_ids_valid.size())
-    # cprint("all_response_ids_valid: ", all_response_ids_valid.size())
-    # cprint("all_response_attention_mask_valid: ", all_response_attention_mask_valid.size())
-    # cprint("all_response_token_type_ids_valid: ", all_response_token_type_ids_valid.size())
-    # cprint("all_persona_ids_valid: ", all_persona_ids_valid.size())
-    # cprint("all_persona_attention_mask_valid: ", all_persona_attention_mask_valid.size())
-    # cprint("all_persona_token_type_ids_valid: ", all_persona_token_type_ids_valid.size())
-    # cprint("context_topic_distribution_valid: ", context_topic_distribution_valid.size())
-    # cprint("response_topic_distribution_valid: ", response_topic_distribution_valid.size())
-    # cprint("persona_topic_distribution_valid: ", persona_topic_distribution_valid.size())
+    cprint("all_context_ids_train: ", all_context_ids_train.size())
+
+    cprint("all_context_attention_mask_train: ", all_context_attention_mask_train.size())
+    cprint("all_context_token_type_ids_train: ", all_context_token_type_ids_train.size())
+    cprint("all_response_ids_train: ", all_response_ids_train.size())
+    cprint("all_response_attention_mask_train: ", all_response_attention_mask_train.size())
+    cprint("all_response_token_type_ids_train: ", all_response_token_type_ids_train.size())
+    cprint("all_persona_ids_train: ", all_persona_ids_train.size())
+    cprint("all_persona_attention_mask_train: ", all_persona_attention_mask_train.size())
+    cprint("all_persona_token_type_ids_train: ", all_persona_token_type_ids_train.size())
+
+    cprint("context_topic_distribution_train: ", context_topic_distribution_train.size())
+    cprint("response_topic_distribution_train: ", response_topic_distribution_train.size())
+    cprint("persona_topic_distribution_train: ", persona_topic_distribution_train.size())
+
+    cprint("all_context_ids_valid: ", all_context_ids_valid.size())
+    cprint("all_context_attention_mask_valid: ", all_context_attention_mask_valid.size())
+    cprint("all_context_token_type_ids_valid: ", all_context_token_type_ids_valid.size())
+    cprint("all_response_ids_valid: ", all_response_ids_valid.size())
+    cprint("all_response_attention_mask_valid: ", all_response_attention_mask_valid.size())
+    cprint("all_response_token_type_ids_valid: ", all_response_token_type_ids_valid.size())
+    cprint("all_persona_ids_valid: ", all_persona_ids_valid.size())
+    cprint("all_persona_attention_mask_valid: ", all_persona_attention_mask_valid.size())
+    cprint("all_persona_token_type_ids_valid: ", all_persona_token_type_ids_valid.size())
+    cprint("context_topic_distribution_valid: ", context_topic_distribution_valid.size())
+    cprint("response_topic_distribution_valid: ", response_topic_distribution_valid.size())
+    cprint("persona_topic_distribution_valid: ", persona_topic_distribution_valid.size())
 
     if not test_mode:
         train_dataset = TensorDataset(all_context_ids_train, all_context_attention_mask_train, all_context_token_type_ids_train, \
@@ -360,7 +361,7 @@ def main(config, progress):
     # Create model
     cprint("Building dmodel...")
 
-    model = ourModel(device)
+    model = ourModel(device, args=args)
     cprint(model)
     cprint("number of parameters: ", count_parameters(model))
 
@@ -379,15 +380,8 @@ def main(config, progress):
 
     if test_mode:
         cprint("Loading weights from ", load_model_path)
-        checkpoint = torch.load(load_model_path)
-        for key in list(checkpoint.keys()):
-            if 'module.' in key:
-                checkpoint[key.replace('module.', '')] = checkpoint[key]
-                del checkpoint[key]
-        model.load_state_dict(checkpoint)
-        # model.module.load_state_dict(torch.load(load_model_path))
+        model.load_state_dict(torch.load(load_model_path))
         models = [model]
-        cprint("loaded weight successuly")
 
     for i, model in enumerate(models):
         cprint("model {0} number of parameters: ".format(i), count_parameters(model))
@@ -401,7 +395,6 @@ def main(config, progress):
     no_decay = ["bias", "LayerNorm.weight"]
     optimizers = []
     schedulers = []
-    cprint("debugger")
     for i, model in enumerate(models):
         optimizer_grouped_parameters = [
             {
@@ -414,13 +407,7 @@ def main(config, progress):
 
         if fp16:
             model, optimizer = amp.initialize(model, optimizer, opt_level=fp16_opt_level)
-            if not test_mode:
-                # models[i] = nn.DataParallel(model, device_ids=[0])
-                models[i] = model
-            else:
-                # models[i] = nn.DataParallel(model, device_ids=[0])
-                models[i] = model
-            cprint("model into DataParallel")
+            models[i] = nn.DataParallel(model, device_ids=[0,1])
         optimizers.append(optimizer)
 
         if not test_mode:
@@ -430,13 +417,12 @@ def main(config, progress):
             schedulers.append(scheduler)
 
     if test_mode:
-        cprint("model.eval()")
         # evaluation
         for model in models:
             model.eval()
         valid_iterator = tqdm(valid_dataloader, desc="Iteration")
-        valid_loss, (valid_acc, valid_recall, valid_MRR) = model.evaluate_epoch(valid_iterator, models, \
-            num_personas, gradient_accumulation_steps, device, dataset, 0, apply_interaction, matching_method, aggregation_method)
+        valid_loss, (valid_acc, valid_recall, valid_MRR) = model.module.evaluate_epoch(topic_embedding, valid_iterator, models, \
+            num_personas, gradient_accumulation_steps, device, dataset, 0, apply_interaction, matching_method, aggregation_method, topic_embedding)
         cprint("test loss: {0:.4f}, test acc: {1:.4f}, test recall: {2}, test MRR: {3:.4f}"
             .format(valid_loss, valid_acc, valid_recall, valid_MRR))
         sys.exit()
@@ -459,16 +445,16 @@ def main(config, progress):
             model.train()
         train_iterator = tqdm(train_dataloader, desc="Iteration")
 
-        train_loss, (train_acc, _, _) = model.train_epoch(train_iterator, models, num_personas, optimizers, \
-            schedulers, gradient_accumulation_steps, device, fp16, amp, apply_interaction, matching_method, aggregation_method)
+        train_loss, (train_acc, _, _) = model.module.train_epoch(train_iterator, models, num_personas, optimizers, \
+            schedulers, gradient_accumulation_steps, device, fp16, amp, apply_interaction, matching_method, aggregation_method, topic_embedding)
         epoch_train_losses.append(train_loss)
 
         # evaluation
         for model in models:
             model.eval()
         valid_iterator = tqdm(valid_dataloader, desc="Iteration")
-        valid_loss, (valid_acc, valid_recall, valid_MRR) = model.evaluate_epoch(valid_iterator, models, \
-            num_personas, gradient_accumulation_steps, device, dataset, epoch, apply_interaction, matching_method, aggregation_method)
+        valid_loss, (valid_acc, valid_recall, valid_MRR) = model.module.evaluate_epoch(valid_iterator, models, \
+            num_personas, gradient_accumulation_steps, device, dataset, epoch, apply_interaction, matching_method, aggregation_method, topic_embedding)
 
         cprint("Config id: {7}, Epoch {0}: train loss: {1:.4f}, valid loss: {2:.4f}, train_acc: {3:.4f}, valid acc: {4:.4f}, valid recall: {5}, valid_MRR: {6:.4f}"
             .format(epoch+1, train_loss, valid_loss, train_acc, valid_acc, valid_recall, valid_MRR, config_id))

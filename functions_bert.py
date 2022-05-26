@@ -1,14 +1,27 @@
+import argparse
+import itertools
+import json
+import multiprocessing as mp
+import os
+import pickle
+import random
+import re
+import string
+import sys
+import time
+import json
 import math
+import copy
+from collections import Counter, OrderedDict
 
 import numpy as np
+import pandas as pd
 import torch
+from torch.utils.data import DataLoader, RandomSampler, TensorDataset
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
 from transformers import AdamW, BertModel, BertTokenizer, get_linear_schedule_with_warmup
-
-import GPUtil
-from pytorch_memlab import MemReporter
 
 from util import load_pickle, save_pickle, count_parameters, compute_metrics, compute_metrics_from_logits
 
@@ -46,7 +59,10 @@ class TransformerBlock(nn.Module):
         init.xavier_normal_(self.linear1.weight)
         init.xavier_normal_(self.linear2.weight)
 
-    def forward(self, Q, K, V, mask=None, dropout=None, episilon=1e-8):
+    def FFN(self, X):
+        return self.linear2(self.relu(self.linear1(X)))
+
+    def forward(self, Q, K, V, episilon=1e-8):
         '''
         :param Q: (batch_size, max_r_words, embedding_dim)
         :param K: (batch_size, max_u_words, embedding_dim)
@@ -56,24 +72,16 @@ class TransformerBlock(nn.Module):
         dk = torch.Tensor([max(1.0, Q.size(-1))]).cuda()
 
         Q_K = Q.bmm(K.permute(0, 2, 1)) / (torch.sqrt(dk) + episilon)
-        if mask is not None:
-            Q_K = Q_K.masked_fill_(mask, -1e9)
         Q_K_score = F.softmax(Q_K, dim=-1)  # (batch_size, max_r_words, max_u_words)
-        if dropout is not None:
-            Q_K_score = dropout(Q_K_score)
-
         V_att = Q_K_score.bmm(V)
-
         if self.is_layer_norm:
             X = self.layer_morm(Q + V_att)  # (batch_size, max_r_words, embedding_dim)
             output = self.layer_morm(self.FFN(X) + X)
         else:
             X = Q + V_att
-            X = self.linear2(self.relu(self.linear1(X))) + X
+            output = self.FFN(X) + X
 
-        return X
-
-
+        return output
 
 class cnnBlock(nn.Module):
     def __init__(self):
@@ -88,8 +96,8 @@ class cnnBlock(nn.Module):
         self.cnn_2d_persona_response_2 = nn.Conv2d(in_channels=1, out_channels=1, kernel_size=(3,3))
         self.maxpooling_persona_response_1 = nn.MaxPool2d(kernel_size=(2, 2), stride=(2, 2))
         self.affine_persona_response = nn.Linear(in_features=6*56*1, out_features=200)
-        self.affine_out = nn.Linear(in_features=200*6, out_features=1)
-        self.dropout = nn.Dropout(0.2)
+        self.affine_out = nn.Linear(in_features=200*4, out_features=1)
+
         self.init_weights()
 
     def init_weights(self):
@@ -115,9 +123,9 @@ class cnnBlock(nn.Module):
 
         Z = Z.view(Z.size(0), -1)
 
-        Z = self.affine_context_response(Z)
+        output_V = self.affine_context_response(Z)
 
-        return Z
+        return output_V
 
     def cnn_persona_response(self, matrix):
         matrix = matrix.unsqueeze(1)
@@ -131,29 +139,24 @@ class cnnBlock(nn.Module):
 
         Z = Z.view(Z.size(0), -1)
 
-        Z = self.affine_persona_response(Z)
+        output_V = self.affine_persona_response(Z)
 
-        return Z
+        return output_V
 
-    def forward(self, context_response_attn_similarity_matrix, context_response_similarity_matrix,\
-                persona_response_attn_similarity_matrix, persona_response_similarity_matrix,\
-                context_response_word_level_attn_simialrity_matrix, persona_response_word_level_attn_simialrity_matrix):
+    def forward(self, context_response_attn_similarity_matrix, context_response_similarity_matrix, persona_response_attn_similarity_matrix, persona_response_similarity_matrix):
 
         context_response_attn_V = self.cnn_contxt_response(context_response_attn_similarity_matrix)
         context_response_V = self.cnn_contxt_response(context_response_similarity_matrix)
         persona_response_attn_V = self.cnn_persona_response(persona_response_attn_similarity_matrix)
         persona_response_V = self.cnn_persona_response(persona_response_similarity_matrix)
-        context_response_word_level_attn_simialrity_matrix_V = self.cnn_contxt_response(context_response_word_level_attn_simialrity_matrix)
-        persona_response_word_level_attn_simialrity_matrix_V = self.cnn_persona_response(persona_response_word_level_attn_simialrity_matrix)
 
-        matching_output = self.affine_out(torch.cat([context_response_attn_V, context_response_V, \
-                                                     persona_response_attn_V, persona_response_V, \
-                                                     context_response_word_level_attn_simialrity_matrix_V, persona_response_word_level_attn_simialrity_matrix_V], dim=-1)).squeeze()
+        all_concat = torch.cat([context_response_attn_V, context_response_V, persona_response_attn_V, persona_response_V], dim=-1)
+        matching_output = self.affine_out(all_concat)
 
-        return matching_output
+        return matching_output.squeeze()
 
 class ourModel (nn.Module):
-    def __init__(self, device):
+    def __init__(self, device, args):
         super(ourModel, self).__init__()
         self.dialog_data_topic = load_pickle("./TopicModelling/dialog_data_topics.pkl")
         self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
@@ -162,10 +165,10 @@ class ourModel (nn.Module):
         self.response_len = 32
         self.context_len = 256
         self.persona_len = 231
-        self.context_transformer  = TransformerBlock(input_size=self.embed_dim)
-        self.response_transformer = TransformerBlock(input_size=self.embed_dim)
-        self.persona_transformer = TransformerBlock(input_size=self.embed_dim)
-        self.cnn_block = cnnBlock()
+        self.context_transformer  = TransformerBlock(input_size=self.embed_dim).to(device)
+        self.response_transformer = TransformerBlock(input_size=self.embed_dim).to(device)
+        self.persona_transformer = TransformerBlock(input_size=self.embed_dim).to(device)
+        self.cnn_block = cnnBlock().to(device)
 
     def convert_topic_id_to_embedding(self, data, topic_embedding):
         # data: [(topic_id_1, topic_prob_1), (topic_id_2, topic_prob_2), ...]
@@ -176,22 +179,23 @@ class ourModel (nn.Module):
             topic_embedding_prob_list.append((topic_id, topic_embedding[int(topic_id)], topic_prob))
         return topic_embedding_prob_list
 
-    def cal_topic_embedding(self, device):
-        all_topic_frequent_words_prob_embeddings = []
-        for frequent_words_probabilities, coherence in tqdm(self.dialog_data_topic):
-            cur_topic_frequent_words_prob_embeddings = []
-            cur_total_probability = 0
-            for probability, word in frequent_words_probabilities:
-                cur_total_probability += probability
-            for probability, word in frequent_words_probabilities:
-                word_encoded = self.tokenizer.encode_plus(word, return_tensors="pt", add_special_tokens=False).to(device)
-                with torch.no_grad():
-                    outputs = self.bert_model(**word_encoded)
-                    word_embedding = outputs[0]
-                    cur_word_embedding_with_prob = (probability/cur_total_probability * word_embedding.squeeze(0)).mean(dim=0)
-                cur_topic_frequent_words_prob_embeddings.append(cur_word_embedding_with_prob)
-            all_topic_frequent_words_prob_embeddings.append(torch.mean(torch.stack(cur_topic_frequent_words_prob_embeddings), dim=0))
-        return all_topic_frequent_words_prob_embeddings
+    def get_id_bert_embedding(self, id):
+        cur_id_topic_info = self.dialog_data_topic[id]
+        frequent_words_probabilities = cur_id_topic_info[0]
+        coherence = cur_id_topic_info[1]
+        cur_topic_frequent_words_prob_embeddings = []
+        cur_total_probability = 0
+        for probability, word in frequent_words_probabilities:
+            cur_total_probability += probability
+        for probability, word in frequent_words_probabilities:
+            word_encoded = self.tokenizer.encode_plus(word, return_tensors="pt", add_special_tokens=False)
+            with torch.no_grad():
+                outputs = self.bert_model(**word_encoded)
+                word_embedding = outputs.hidden_states[0]
+                cur_word_embedding_with_prob = (probability/cur_total_probability * word_embedding.squeeze(0)).mean(dim=0)
+            cur_topic_frequent_words_prob_embeddings.append(cur_word_embedding_with_prob)
+        return torch.mean(torch.stack(cur_topic_frequent_words_prob_embeddings), dim=0)
+
 
     def convert_topic_embedding_matrix(self, topic_embedding, context_topic_distribution, response_topic_distribution, persona_topic_distribution, device):
         topic_embedding_data = []
@@ -274,7 +278,7 @@ class ourModel (nn.Module):
 
 
     def train_epoch(self, data_iter, models, num_personas, optimizers, schedulers, gradient_accumulation_steps, device, fp16, amp, \
-                    apply_interaction, matching_method, aggregation_method):
+                    apply_interaction, matching_method, aggregation_method, topic_embedding):
         epoch_loss = []
         ok = 0
         total = 0
@@ -291,32 +295,28 @@ class ourModel (nn.Module):
 
         for optimizer in optimizers:
             optimizer.zero_grad()
-        reporter = MemReporter()
 
         for i, batch in enumerate(data_iter):
             batch = tuple(t.to(device) for t in batch)
-            # reporter.report()
-            if i%1000 == 0:
-                topic_embeddding = self.cal_topic_embedding(device)
             batch_context_word_level = {"input_ids": batch[0], "attention_mask": batch[1], "token_type_ids": batch[2]}
             batch_response_word_level = {"input_ids": batch[3], "attention_mask": batch[4], "token_type_ids": batch[5]}
             batch_context_topic_distribution, batch_response_topic_distribution, batch_persona_topic_distribution =  batch[9],  batch[10], batch[11]
             batch_Uce_context, batch_UPct_context, batch_context_topic_mask, batch_Uce_response, batch_UPct_response, \
             batch_response_topic_mask, batch_Uce_persona, batch_UPct_persona, batch_persona_topic_mask \
-                = self.convert_topic_embedding_matrix(topic_embeddding, batch_context_topic_distribution, batch_response_topic_distribution, batch_persona_topic_distribution, device)
+                = self.convert_topic_embedding_matrix(topic_embedding, batch_context_topic_distribution, batch_response_topic_distribution, batch_persona_topic_distribution, device)
 
             has_persona = len(batch) > 10
 
             if has_persona:
                 batch_word_persona = {"input_ids": batch[6], "attention_mask": batch[7], "token_type_ids": batch[8]}
+
             output_context_word_level = self.bert_model(**batch_context_word_level)
             output_response_word_level = self.bert_model(**batch_response_word_level)
-
-
             batch_context_mask = batch[1].float()
             batch_response_mask = batch[4].float()
             batch_context_emb = output_context_word_level[0] # (batch_size, context_len, emb_size) last hidden state
             batch_response_emb = output_response_word_level[0] # (batch_size, sent_len, emb_size) last hidden state
+
             batch_size, sent_len, emb_size = batch_response_emb.shape
 
             batch_persona_emb = None
@@ -352,8 +352,8 @@ class ourModel (nn.Module):
             # targets = torch.arange(batch_size, device=batch[0].device)
             targets = torch.eye(batch_size, device=batch[0].device).reshape(batch_size, num_candidates)
             # cprint("targets: ", targets)
-            # reporter.report()
-            logits = context_model.module.forward (batch_context_emb, batch_response_emb, batch_persona_emb, \
+
+            logits = context_model (batch_context_emb, batch_response_emb, batch_persona_emb, \
                            batch_context_mask, batch_response_mask, batch_persona_mask, \
                            batch_Uce_context, batch_UPct_context, batch_Uce_response, \
                            batch_UPct_response, batch_Uce_persona, batch_UPct_persona, \
@@ -361,17 +361,24 @@ class ourModel (nn.Module):
                            batch_size, num_candidates, device)
             logits = logits.reshape(batch_size, num_candidates)
             loss = F.cross_entropy(logits, targets)
+            # cprint("train logits: ", logits.shape)
+            # cprint("train targets: ", targets.shape)
+            # cprint("train loss: ", loss.shape)
+            # cprint("train logits: ", logits)
+            # cprint("train targets: ", targets)
+            # cprint("train loss: ", loss)
             # loss = F.binary_cross_entropy_with_logits(logits, targets)
             num_ok = (torch.arange(batch_size, device=batch[0].device).long() == logits.float().argmax(dim=1)).sum()
             ok += num_ok.item()
             total += batch[0].shape[0]
-            # reporter.report()
-            del logits
             if gradient_accumulation_steps > 1:
                 loss = loss / gradient_accumulation_steps
             if fp16:
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
+                    # cprint("scaled_loss.backward()")
                     scaled_loss.backward()
+                    # for n, p in context_model.named_parameters():
+                    #     cprint(n, p.grad)
 
             else:
                 # cprint("loss.backward()")
@@ -398,12 +405,11 @@ class ourModel (nn.Module):
             if i%print_every == 0:
                 cprint("train loss: ", np.mean(epoch_loss[-print_every:]))
                 cprint("accuracy: ", ok/total)
-
         acc = ok/total
         return np.mean(epoch_loss), (acc, 0, 0)
 
     def evaluate_epoch(self, data_iter, models, num_personas, gradient_accumulation_steps, device, dataset, epoch, \
-                       apply_interaction, matching_method, aggregation_method):
+                       apply_interaction, matching_method, aggregation_method, topic_embedding):
         epoch_loss = []
         ok = 0
         total = 0
@@ -420,17 +426,16 @@ class ourModel (nn.Module):
         if len(models) == 3:
             context_model, response_model, persona_model = models
         # reporter = MemReporter(context_model)
-        topic_embeddding = self.cal_topic_embedding(device)
+
         for batch_idx, batch in enumerate(data_iter):
             # print('========= Report for ', batch_idx, '-th batch in evaluation step =========')
             # reporter.report()
             batch = tuple(t.to(device) for t in batch)
             batch_response_word_level = {"input_ids": batch[3], "attention_mask": batch[4], "token_type_ids": batch[5]}
             batch_context_topic_distribution, batch_response_topic_distribution, batch_persona_topic_distribution =  batch[9],  batch[10], batch[11]
-            with torch.no_grad():
-                batch_Uce_context, batch_UPct_context, batch_context_topic_mask, batch_Uce_response, batch_UPct_response, \
+            batch_Uce_context, batch_UPct_context, batch_context_topic_mask, batch_Uce_response, batch_UPct_response, \
                 batch_response_topic_mask, batch_Uce_persona, batch_UPct_persona, batch_persona_topic_mask \
-                    = self.convert_topic_embedding_matrix(topic_embeddding, batch_context_topic_distribution, batch_response_topic_distribution, batch_persona_topic_distribution, device)
+                    = self.convert_topic_embedding_matrix(topic_embedding, batch_context_topic_distribution, batch_response_topic_distribution, batch_persona_topic_distribution, device)
 
             has_persona = len(batch) > 10
 
@@ -521,7 +526,7 @@ class ourModel (nn.Module):
                 # compute loss
                 # targets = torch.arange(batch_size, device=batch[0].device)
                 targets = torch.eye(batch_size, device=batch[0].device).reshape(batch_size, num_candidates)
-                loss = F.cross_entropy(logits, targets)
+                loss = F.binary_cross_entropy_with_logits(logits, targets)
                 # loss = F.cross_entropy(logits, targets)
                 # cprint("valid logits: ", logits.shape)
                 # cprint("valid targets: ", targets.shape)
@@ -556,7 +561,6 @@ class ourModel (nn.Module):
         MRR = np.mean(MRR)
         return np.mean(epoch_loss), (acc, recall, MRR)
 
-
     def forward(self, batch_context_emb, batch_response_emb, batch_persona_emb, \
          batch_context_mask, batch_response_mask, batch_persona_mask, \
          batch_Uce_context, batch_UPct_context, batch_Uce_response, \
@@ -566,75 +570,31 @@ class ourModel (nn.Module):
 
         # word level: [batch_size, # of words]
         # topic_level mask: [batch_size, # of topic K = 100]
-
-
-        # Bert Word Embedding
-        context_response_word_mask = ~torch.bmm(batch_context_mask.unsqueeze(-1), batch_response_mask.unsqueeze(1)).bool()
-        persona_response_word_mask = ~torch.bmm(batch_persona_mask.unsqueeze(-1), batch_response_mask.unsqueeze(1)).bool()
-
-        context_response_similarity_matrix = torch.bmm(batch_context_emb, batch_response_emb.transpose(1,2))
-        context_response_similarity_matrix = context_response_similarity_matrix.masked_fill_(context_response_word_mask, 0)
-
-        persona_response_similarity_matrix = torch.bmm(batch_persona_emb, batch_response_emb.transpose(1,2))
-        persona_response_similarity_matrix = persona_response_similarity_matrix.masked_fill_(persona_response_word_mask, 0)
-
-         # Attention
+        # Get the attention mask
         context_attn_mask = torch.bmm(batch_context_mask.unsqueeze(-1), batch_context_topic_mask.unsqueeze(1))  # (batch_size, m, n)
-        response_attn_mask = torch.bmm(batch_response_mask.unsqueeze(-1), batch_response_topic_mask.unsqueeze(1)) # (batch_size, m, n)
+        response_attn_mask = torch.bmm(batch_response_mask.unsqueeze(-1), batch_response_topic_mask.unsqueeze(1))  # (batch_size, m, n)
         persona_attn_mask = torch.bmm(batch_persona_mask.unsqueeze(-1), batch_persona_topic_mask.unsqueeze(1))  # (batch_size, m, n)
 
-        context_attn_output = self.context_transformer(batch_context_emb, batch_Uce_context * (batch_UPct_context.repeat(1, 768, 1).transpose(1, 2)), batch_Uce_context, mask=~context_attn_mask.bool())
-        response_attn_output = self.response_transformer(batch_response_emb, batch_Uce_response * (batch_UPct_response.repeat(1, 768, 1).transpose(1, 2)), batch_Uce_response, mask=~response_attn_mask.bool())
-        persona_attn_output = self.persona_transformer(batch_persona_emb, batch_Uce_persona * batch_UPct_persona.repeat(1, 768, 1).transpose(1, 2), batch_Uce_persona, mask=~persona_attn_mask.bool())
+        context_attn_output = self.context_transformer(batch_context_emb, batch_Uce_context * (batch_UPct_context.repeat(1, 768, 1).transpose(1, 2)), batch_Uce_context)
+        response_attn_output = self.response_transformer(batch_response_emb, batch_Uce_response * (batch_UPct_response.repeat(1, 768, 1).transpose(1, 2)), batch_Uce_response)
+        persona_attn_output = self.persona_transformer(batch_persona_emb, batch_Uce_persona * batch_UPct_persona.repeat(1, 768, 1).transpose(1, 2), batch_Uce_persona)
 
         context_response_attn_mask = ~torch.bmm(context_attn_mask, response_attn_mask.transpose(1, 2)).bool()
         persona_response_attn_mask = ~torch.bmm(persona_attn_mask, response_attn_mask.transpose(1, 2)).bool()
+        context_persona_attn_mask = ~torch.bmm(context_attn_mask, persona_attn_mask.transpose(1, 2)).bool()
 
         context_response_attn_similarity_matrix = torch.bmm(context_attn_output, response_attn_output.transpose(1,2))
-
         context_response_attn_similarity_matrix = context_response_attn_similarity_matrix.masked_fill_(context_response_attn_mask, 0)
-
+        context_response_similarity_matrix = torch.bmm(batch_context_emb, batch_response_emb.transpose(1,2))
+        context_response_similarity_matrix = context_response_similarity_matrix.masked_fill_(context_response_attn_mask, 0)
         persona_response_attn_similarity_matrix = torch.bmm(persona_attn_output, response_attn_output.transpose(1,2))
         persona_response_attn_similarity_matrix = persona_response_attn_similarity_matrix.masked_fill_(persona_response_attn_mask, 0)
+        persona_response_similarity_matrix = torch.bmm(batch_persona_emb, batch_response_emb.transpose(1,2))
+        persona_response_similarity_matrix = persona_response_similarity_matrix.masked_fill_(persona_response_attn_mask, 0)
 
-        # Interaction
-        # 0. Mask
-        response_context_word_mask = ~torch.bmm(batch_response_mask.unsqueeze(-1), batch_context_mask.unsqueeze(1)).bool()
-        response_persona_word_mask = ~torch.bmm(batch_response_mask.unsqueeze(-1), batch_persona_mask.unsqueeze(1)).bool()
-        # 1. Only word level
-        context_add_response_attn = self.context_transformer(batch_context_emb, batch_response_emb, batch_response_emb, mask=~context_response_word_mask.bool())
-        response_add_context_attn = self.response_transformer(batch_response_emb, batch_context_emb, batch_context_emb, mask=~response_context_word_mask.bool())
+        output = self.cnn_block(context_response_attn_similarity_matrix, context_response_similarity_matrix, persona_response_attn_similarity_matrix, persona_response_similarity_matrix)
 
-        persona_add_response_attn = self.persona_transformer(batch_persona_emb, batch_response_emb, batch_response_emb, mask=~persona_response_word_mask.bool())
-        response_add_persona_attn = self.response_transformer(batch_response_emb, batch_persona_emb, batch_persona_emb, mask=~response_persona_word_mask.bool())
-        # 2. mask
-        context_response_interaction_mask = ~torch.bmm(batch_context_mask.unsqueeze(-1), batch_response_mask.unsqueeze(1)).bool()
-        persona_response_interaction_mask = ~torch.bmm(batch_persona_mask.unsqueeze(-1), batch_response_mask.unsqueeze(1)).bool()
-
-        # 3. similarity matrix
-        context_response_word_level_attn_simialrity_matrix = torch.bmm(context_add_response_attn, response_add_context_attn.transpose(1,2))
-        context_response_word_level_attn_simialrity_matrix = context_response_word_level_attn_simialrity_matrix.masked_fill_(context_response_interaction_mask, 0)
-
-        persona_response_word_level_attn_simialrity_matrix = torch.bmm(persona_add_response_attn, response_add_persona_attn.transpose(1,2))
-        persona_response_word_level_attn_simialrity_matrix = persona_response_word_level_attn_simialrity_matrix.masked_fill_(persona_response_interaction_mask, 0)
-
-        # cprint("context_response_attn_similarity_matrix: ",context_response_attn_similarity_matrix.shape)
-        # cprint("context_response_similarity_matrix: ",context_response_similarity_matrix.shape)
-        # cprint("persona_response_attn_similarity_matrix: ",persona_response_attn_similarity_matrix.shape)
-        # cprint("persona_response_similarity_matrix: ",persona_response_similarity_matrix.shape)
-        # cprint("context_response_word_level_attn_simialrity_matrix: ",context_response_word_level_attn_simialrity_matrix.shape)
-        # cprint("persona_response_word_level_attn_simialrity_matrix: ",persona_response_word_level_attn_simialrity_matrix.shape)
-        #
-        # cprint("context_response_attn_similarity_matrix: ",context_response_attn_similarity_matrix)
-        # cprint("context_response_similarity_matrix: ",context_response_similarity_matrix)
-        # cprint("persona_response_attn_similarity_matrix: ",persona_response_attn_similarity_matrix)
-        # cprint("persona_response_similarity_matrix: ",persona_response_similarity_matrix)
-        # cprint("context_response_word_level_attn_simialrity_matrix: ",context_response_word_level_attn_simialrity_matrix)
-        # cprint("persona_response_word_level_attn_simialrity_matrix: ",persona_response_word_level_attn_simialrity_matrix)
-
-        return self.cnn_block(context_response_attn_similarity_matrix, context_response_similarity_matrix,\
-                                persona_response_attn_similarity_matrix, persona_response_similarity_matrix,\
-                              context_response_word_level_attn_simialrity_matrix, persona_response_word_level_attn_simialrity_matrix).squeeze()
+        return output.squeeze()
 
 
 

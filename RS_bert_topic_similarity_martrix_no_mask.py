@@ -24,7 +24,7 @@ from tqdm import tqdm
 from transformers import AdamW, BertModel, BertTokenizer, get_linear_schedule_with_warmup
 
 from util import load_pickle, save_pickle, count_parameters, compute_metrics, compute_metrics_from_logits
-from functions_bert_topic import *
+from functions_bert_topic_similarity_martrix_no_mask import *
 
 from gensim.models import LdaModel
 from pprint import pprint
@@ -415,11 +415,9 @@ def main(config, progress):
         if fp16:
             model, optimizer = amp.initialize(model, optimizer, opt_level=fp16_opt_level)
             if not test_mode:
-                # models[i] = nn.DataParallel(model, device_ids=[0])
-                models[i] = model
+                models[i] = nn.DataParallel(model, device_ids=[0])
             else:
-                # models[i] = nn.DataParallel(model, device_ids=[0])
-                models[i] = model
+                models[i] = nn.DataParallel(model, device_ids=[0])
             cprint("model into DataParallel")
         optimizers.append(optimizer)
 
@@ -435,7 +433,7 @@ def main(config, progress):
         for model in models:
             model.eval()
         valid_iterator = tqdm(valid_dataloader, desc="Iteration")
-        valid_loss, (valid_acc, valid_recall, valid_MRR) = model.evaluate_epoch(valid_iterator, models, \
+        valid_loss, (valid_acc, valid_recall, valid_MRR) = model.module.evaluate_epoch(valid_iterator, models, \
             num_personas, gradient_accumulation_steps, device, dataset, 0, apply_interaction, matching_method, aggregation_method)
         cprint("test loss: {0:.4f}, test acc: {1:.4f}, test recall: {2}, test MRR: {3:.4f}"
             .format(valid_loss, valid_acc, valid_recall, valid_MRR))
@@ -459,7 +457,7 @@ def main(config, progress):
             model.train()
         train_iterator = tqdm(train_dataloader, desc="Iteration")
 
-        train_loss, (train_acc, _, _) = model.train_epoch(train_iterator, models, num_personas, optimizers, \
+        train_loss, (train_acc, _, _) = model.module.train_epoch(train_iterator, models, num_personas, optimizers, \
             schedulers, gradient_accumulation_steps, device, fp16, amp, apply_interaction, matching_method, aggregation_method)
         epoch_train_losses.append(train_loss)
 
@@ -467,7 +465,7 @@ def main(config, progress):
         for model in models:
             model.eval()
         valid_iterator = tqdm(valid_dataloader, desc="Iteration")
-        valid_loss, (valid_acc, valid_recall, valid_MRR) = model.evaluate_epoch(valid_iterator, models, \
+        valid_loss, (valid_acc, valid_recall, valid_MRR) = model.module.evaluate_epoch(valid_iterator, models, \
             num_personas, gradient_accumulation_steps, device, dataset, epoch, apply_interaction, matching_method, aggregation_method)
 
         cprint("Config id: {7}, Epoch {0}: train loss: {1:.4f}, valid loss: {2:.4f}, train_acc: {3:.4f}, valid acc: {4:.4f}, valid recall: {5}, valid_MRR: {6:.4f}"

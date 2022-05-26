@@ -360,7 +360,7 @@ def main(config, progress):
     # Create model
     cprint("Building dmodel...")
 
-    model = ourModel(device, args=args)
+    model = ourModel(device)
     cprint(model)
     cprint("number of parameters: ", count_parameters(model))
 
@@ -387,6 +387,7 @@ def main(config, progress):
         model.load_state_dict(checkpoint)
         # model.module.load_state_dict(torch.load(load_model_path))
         models = [model]
+        cprint("loaded weight successuly")
 
     for i, model in enumerate(models):
         cprint("model {0} number of parameters: ".format(i), count_parameters(model))
@@ -400,6 +401,7 @@ def main(config, progress):
     no_decay = ["bias", "LayerNorm.weight"]
     optimizers = []
     schedulers = []
+    cprint("debugger")
     for i, model in enumerate(models):
         optimizer_grouped_parameters = [
             {
@@ -412,7 +414,11 @@ def main(config, progress):
 
         if fp16:
             model, optimizer = amp.initialize(model, optimizer, opt_level=fp16_opt_level)
-            models[i] = nn.DataParallel(model, device_ids=[0, 1, 2])
+            if not test_mode:
+                models[i] = nn.DataParallel(model, device_ids=[0])
+            else:
+                models[i] = nn.DataParallel(model, device_ids=[0])
+            cprint("model into DataParallel")
         optimizers.append(optimizer)
 
         if not test_mode:
@@ -422,13 +428,13 @@ def main(config, progress):
             schedulers.append(scheduler)
 
     if test_mode:
+        cprint("model.eval()")
         # evaluation
         for model in models:
             model.eval()
         valid_iterator = tqdm(valid_dataloader, desc="Iteration")
-        with torch.no_grad():
-            valid_loss, (valid_acc, valid_recall, valid_MRR) = model.module.evaluate_epoch(valid_iterator, models, \
-                num_personas, gradient_accumulation_steps, device, dataset, 0, apply_interaction, matching_method, aggregation_method)
+        valid_loss, (valid_acc, valid_recall, valid_MRR) = model.module.evaluate_epoch(valid_iterator, models, \
+            num_personas, gradient_accumulation_steps, device, dataset, 0, apply_interaction, matching_method, aggregation_method)
         cprint("test loss: {0:.4f}, test acc: {1:.4f}, test recall: {2}, test MRR: {3:.4f}"
             .format(valid_loss, valid_acc, valid_recall, valid_MRR))
         sys.exit()
@@ -459,9 +465,8 @@ def main(config, progress):
         for model in models:
             model.eval()
         valid_iterator = tqdm(valid_dataloader, desc="Iteration")
-        with torch.no_grad():
-            valid_loss, (valid_acc, valid_recall, valid_MRR) = model.module.evaluate_epoch(valid_iterator, models, \
-                num_personas, gradient_accumulation_steps, device, dataset, epoch, apply_interaction, matching_method, aggregation_method)
+        valid_loss, (valid_acc, valid_recall, valid_MRR) = model.module.evaluate_epoch(valid_iterator, models, \
+            num_personas, gradient_accumulation_steps, device, dataset, epoch, apply_interaction, matching_method, aggregation_method)
 
         cprint("Config id: {7}, Epoch {0}: train loss: {1:.4f}, valid loss: {2:.4f}, train_acc: {3:.4f}, valid acc: {4:.4f}, valid recall: {5}, valid_MRR: {6:.4f}"
             .format(epoch+1, train_loss, valid_loss, train_acc, valid_acc, valid_recall, valid_MRR, config_id))

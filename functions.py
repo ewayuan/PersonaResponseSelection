@@ -23,7 +23,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
 from transformers import AdamW, BertModel, BertTokenizer, get_linear_schedule_with_warmup
-from neko_fixed_torch_transformer import neko_MultiheadAttention
 
 from util import load_pickle, save_pickle, count_parameters, compute_metrics, compute_metrics_from_logits
 # from pytorch_memlab import MemReporter
@@ -99,7 +98,7 @@ class cnnBlock(nn.Module):
         self.cnn_2d_persona_response_2 = nn.Conv2d(in_channels=1, out_channels=1, kernel_size=(3,3))
         self.maxpooling_persona_response_1 = nn.MaxPool2d(kernel_size=(2, 2), stride=(2, 2))
         self.affine_persona_response = nn.Linear(in_features=6*56*1, out_features=200)
-        self.affine_out = nn.Linear(in_features=200*4, out_features=1)
+        self.affine_out = nn.Linear(in_features=200*2, out_features=1)
 
         self.init_weights()
 
@@ -146,14 +145,14 @@ class cnnBlock(nn.Module):
 
         return output_V
 
-    def forward(self, context_response_attn_similarity_matrix, context_response_similarity_matrix, persona_response_attn_similarity_matrix, persona_response_similarity_matrix):
+    def forward(self, context_response_similarity_matrix, persona_response_similarity_matrix):
 
-        context_response_attn_V = self.cnn_contxt_response(context_response_attn_similarity_matrix)
+        # context_response_attn_V = self.cnn_contxt_response(context_response_attn_similarity_matrix)
         context_response_V = self.cnn_contxt_response(context_response_similarity_matrix)
-        persona_response_attn_V = self.cnn_persona_response(persona_response_attn_similarity_matrix)
+        # persona_response_attn_V = self.cnn_persona_response(persona_response_attn_similarity_matrix)
         persona_response_V = self.cnn_persona_response(persona_response_similarity_matrix)
+        all_concat = torch.cat([context_response_V, persona_response_V], dim=-1)
 
-        all_concat = torch.cat([context_response_attn_V, context_response_V, persona_response_attn_V, persona_response_V], dim=-1)
         matching_output = self.affine_out(all_concat)
 
         return matching_output.squeeze()
@@ -165,9 +164,9 @@ class ourModel (nn.Module):
         self.response_len = 32
         self.context_len = 256
         self.persona_len = 231
-        self.context_transformer  = TransformerBlock(input_size=self.embed_dim).to(device)
-        self.response_transformer = TransformerBlock(input_size=self.embed_dim).to(device)
-        self.persona_transformer = TransformerBlock(input_size=self.embed_dim).to(device)
+        # self.context_transformer  = TransformerBlock(input_size=self.embed_dim).to(device)
+        # self.response_transformer = TransformerBlock(input_size=self.embed_dim).to(device)
+        # self.persona_transformer = TransformerBlock(input_size=self.embed_dim).to(device)
         self.cnn_block = cnnBlock().to(device)
         # self.gru_context_response = nn.GRU(input_size=self.context_len, hidden_size=300, batch_first=True).to(device)
         # self.gru_persona_response = nn.GRU(input_size=self.persona_len, hidden_size=300, batch_first=True).to(device)
@@ -218,22 +217,22 @@ class ourModel (nn.Module):
         response_attn_mask = torch.bmm(batch_response_mask.unsqueeze(-1), batch_response_topic_mask.unsqueeze(1))  # (batch_size, m, n)
         persona_attn_mask = torch.bmm(batch_persona_mask.unsqueeze(-1), batch_persona_topic_mask.unsqueeze(1))  # (batch_size, m, n)
 
-        context_attn_output = self.context_transformer(batch_context_emb, batch_Uce_context * (batch_UPct_context.repeat(1, 768, 1).transpose(1, 2)), batch_Uce_context)
-        response_attn_output = self.response_transformer(batch_response_emb, batch_Uce_response * (batch_UPct_response.repeat(1, 768, 1).transpose(1, 2)), batch_Uce_response)
-        persona_attn_output = self.persona_transformer(batch_persona_emb, batch_Uce_persona * batch_UPct_persona.repeat(1, 768, 1).transpose(1, 2), batch_Uce_persona)
+        # context_attn_output = self.context_transformer(batch_context_emb, batch_Uce_context * (batch_UPct_context.repeat(1, 768, 1).transpose(1, 2)), batch_Uce_context)
+        # response_attn_output = self.response_transformer(batch_response_emb, batch_Uce_response * (batch_UPct_response.repeat(1, 768, 1).transpose(1, 2)), batch_Uce_response)
+        # persona_attn_output = self.persona_transformer(batch_persona_emb, batch_Uce_persona * batch_UPct_persona.repeat(1, 768, 1).transpose(1, 2), batch_Uce_persona)
+        #
+        # context_response_attn_mask = ~torch.bmm(context_attn_mask, response_attn_mask.transpose(1, 2)).bool()
+        # persona_response_attn_mask = ~torch.bmm(persona_attn_mask, response_attn_mask.transpose(1, 2)).bool()
+        # context_persona_attn_mask = ~torch.bmm(context_attn_mask, persona_attn_mask.transpose(1, 2)).bool()
 
-        context_response_attn_mask = ~torch.bmm(context_attn_mask, response_attn_mask.transpose(1, 2)).bool()
-        persona_response_attn_mask = ~torch.bmm(persona_attn_mask, response_attn_mask.transpose(1, 2)).bool()
-        context_persona_attn_mask = ~torch.bmm(context_attn_mask, persona_attn_mask.transpose(1, 2)).bool()
-
-        context_response_attn_similarity_matrix = torch.bmm(context_attn_output, response_attn_output.transpose(1,2))
-        context_response_attn_similarity_matrix = context_response_attn_similarity_matrix.masked_fill_(context_response_attn_mask, 0)
+        # context_response_attn_similarity_matrix = torch.bmm(context_attn_output, response_attn_output.transpose(1,2))
+        # context_response_attn_similarity_matrix = context_response_attn_similarity_matrix.masked_fill_(context_response_attn_mask, 0)
         context_response_similarity_matrix = torch.bmm(batch_context_emb, batch_response_emb.transpose(1,2))
-        context_response_similarity_matrix = context_response_similarity_matrix.masked_fill_(context_response_attn_mask, 0)
-        persona_response_attn_similarity_matrix = torch.bmm(persona_attn_output, response_attn_output.transpose(1,2))
-        persona_response_attn_similarity_matrix = persona_response_attn_similarity_matrix.masked_fill_(persona_response_attn_mask, 0)
+        # context_response_similarity_matrix = context_response_similarity_matrix.masked_fill_(context_response_attn_mask, 0)
+        # persona_response_attn_similarity_matrix = torch.bmm(persona_attn_output, response_attn_output.transpose(1,2))
+        # persona_response_attn_similarity_matrix = persona_response_attn_similarity_matrix.masked_fill_(persona_response_attn_mask, 0)
         persona_response_similarity_matrix = torch.bmm(batch_persona_emb, batch_response_emb.transpose(1,2))
-        persona_response_similarity_matrix = persona_response_similarity_matrix.masked_fill_(persona_response_attn_mask, 0)
+        # persona_response_similarity_matrix = persona_response_similarity_matrix.masked_fill_(persona_response_attn_mask, 0)
 
         # cprint("context_response_attn_similarity_matrix: ", context_response_attn_similarity_matrix)
         # cprint("context_response_attn_similarity_matrix: ", context_response_attn_similarity_matrix.shape)
@@ -263,7 +262,7 @@ class ourModel (nn.Module):
         #
         # output = self.affine_out(all_concat)
 
-        output = self.cnn_block(context_response_attn_similarity_matrix, context_response_similarity_matrix, persona_response_attn_similarity_matrix, persona_response_similarity_matrix)
+        output = self.cnn_block(context_response_similarity_matrix, persona_response_similarity_matrix)
 
         # cprint("output: ", output.shape)
 

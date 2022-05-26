@@ -29,50 +29,25 @@ import torch.nn.init as init
 
 import logging
 
-class TransformerBlock(nn.Module):
+class ScaledDotProductAttention(nn.Module):
+    ''' Scaled Dot-Product Attention '''
 
-    def __init__(self, input_size, is_layer_norm=False):
-        super(TransformerBlock, self).__init__()
-        self.is_layer_norm = is_layer_norm
-        if is_layer_norm:
-            self.layer_morm = nn.LayerNorm(normalized_shape=input_size)
+    def __init__(self, temperature, attn_dropout=0.1):
+        super().__init__()
+        self.temperature = temperature
+        self.dropout = nn.Dropout(attn_dropout)
 
-        self.relu = nn.ReLU()
-        self.linear1 = nn.Linear(input_size, input_size)
-        self.linear2 = nn.Linear(input_size, input_size)
-        self.init_weights()
+    def forward(self, q, k, v, mask=None):
 
-    def init_weights(self):
-        init.xavier_normal_(self.linear1.weight)
-        init.xavier_normal_(self.linear2.weight)
+        attn = torch.matmul(q / self.temperature, k.transpose(2, 3))
 
-    def forward(self, Q, K, V, mask=None, dropout=None, episilon=1e-8):
-        '''
-        :param Q: (batch_size, max_r_words, embedding_dim)
-        :param K: (batch_size, max_u_words, embedding_dim)
-        :param V: (batch_size, max_u_words, embedding_dim)
-        :return: output: (batch_size, max_r_words, embedding_dim)  same size as Q
-        '''
-        dk = torch.Tensor([max(1.0, Q.size(-1))]).cuda()
-
-        Q_K = Q.bmm(K.permute(0, 2, 1)) / (torch.sqrt(dk) + episilon)
         if mask is not None:
-            Q_K = Q_K.masked_fill_(mask, -1e9)
-        Q_K_score = F.softmax(Q_K, dim=-1)  # (batch_size, max_r_words, max_u_words)
-        if dropout is not None:
-            Q_K_score = dropout(Q_K_score)
+            attn = attn.masked_fill_(mask, -1e9)
 
-        V_att = Q_K_score.bmm(V)
+        attn = self.dropout(F.softmax(attn, dim=-1))
+        output = torch.matmul(attn, v)
 
-        if self.is_layer_norm:
-            X = self.layer_morm(Q + V_att)  # (batch_size, max_r_words, embedding_dim)
-            output = self.layer_morm(self.FFN(X) + X)
-        else:
-            X = Q + V_att
-            X = self.linear2(self.relu(self.linear1(X))) + X
-
-        return X
-
+        return output, attn
 
 
 class cnnBlock(nn.Module):
@@ -89,7 +64,7 @@ class cnnBlock(nn.Module):
         self.maxpooling_persona_response_1 = nn.MaxPool2d(kernel_size=(2, 2), stride=(2, 2))
         self.affine_persona_response = nn.Linear(in_features=6*56*1, out_features=200)
         self.affine_out = nn.Linear(in_features=200*6, out_features=1)
-        self.dropout = nn.Dropout(0.2)
+
         self.init_weights()
 
     def init_weights(self):
@@ -145,7 +120,6 @@ class cnnBlock(nn.Module):
         persona_response_V = self.cnn_persona_response(persona_response_similarity_matrix)
         context_response_word_level_attn_simialrity_matrix_V = self.cnn_contxt_response(context_response_word_level_attn_simialrity_matrix)
         persona_response_word_level_attn_simialrity_matrix_V = self.cnn_persona_response(persona_response_word_level_attn_simialrity_matrix)
-
         matching_output = self.affine_out(torch.cat([context_response_attn_V, context_response_V, \
                                                      persona_response_attn_V, persona_response_V, \
                                                      context_response_word_level_attn_simialrity_matrix_V, persona_response_word_level_attn_simialrity_matrix_V], dim=-1)).squeeze()
@@ -573,10 +547,10 @@ class ourModel (nn.Module):
         persona_response_word_mask = ~torch.bmm(batch_persona_mask.unsqueeze(-1), batch_response_mask.unsqueeze(1)).bool()
 
         context_response_similarity_matrix = torch.bmm(batch_context_emb, batch_response_emb.transpose(1,2))
-        context_response_similarity_matrix = context_response_similarity_matrix.masked_fill_(context_response_word_mask, 0)
+        # context_response_similarity_matrix = context_response_similarity_matrix.masked_fill_(context_response_word_mask, 0)
 
         persona_response_similarity_matrix = torch.bmm(batch_persona_emb, batch_response_emb.transpose(1,2))
-        persona_response_similarity_matrix = persona_response_similarity_matrix.masked_fill_(persona_response_word_mask, 0)
+        # persona_response_similarity_matrix = persona_response_similarity_matrix.masked_fill_(persona_response_word_mask, 0)
 
          # Attention
         context_attn_mask = torch.bmm(batch_context_mask.unsqueeze(-1), batch_context_topic_mask.unsqueeze(1))  # (batch_size, m, n)
@@ -591,11 +565,10 @@ class ourModel (nn.Module):
         persona_response_attn_mask = ~torch.bmm(persona_attn_mask, response_attn_mask.transpose(1, 2)).bool()
 
         context_response_attn_similarity_matrix = torch.bmm(context_attn_output, response_attn_output.transpose(1,2))
-
-        context_response_attn_similarity_matrix = context_response_attn_similarity_matrix.masked_fill_(context_response_attn_mask, 0)
+        # context_response_attn_similarity_matrix = context_response_attn_similarity_matrix.masked_fill_(context_response_attn_mask, 0)
 
         persona_response_attn_similarity_matrix = torch.bmm(persona_attn_output, response_attn_output.transpose(1,2))
-        persona_response_attn_similarity_matrix = persona_response_attn_similarity_matrix.masked_fill_(persona_response_attn_mask, 0)
+        # persona_response_attn_similarity_matrix = persona_response_attn_similarity_matrix.masked_fill_(persona_response_attn_mask, 0)
 
         # Interaction
         # 0. Mask
@@ -613,10 +586,10 @@ class ourModel (nn.Module):
 
         # 3. similarity matrix
         context_response_word_level_attn_simialrity_matrix = torch.bmm(context_add_response_attn, response_add_context_attn.transpose(1,2))
-        context_response_word_level_attn_simialrity_matrix = context_response_word_level_attn_simialrity_matrix.masked_fill_(context_response_interaction_mask, 0)
+        # context_response_word_level_attn_simialrity_matrix = context_response_word_level_attn_simialrity_matrix.masked_fill_(context_response_interaction_mask, 0)
 
         persona_response_word_level_attn_simialrity_matrix = torch.bmm(persona_add_response_attn, response_add_persona_attn.transpose(1,2))
-        persona_response_word_level_attn_simialrity_matrix = persona_response_word_level_attn_simialrity_matrix.masked_fill_(persona_response_interaction_mask, 0)
+        # persona_response_word_level_attn_simialrity_matrix = persona_response_word_level_attn_simialrity_matrix.masked_fill_(persona_response_interaction_mask, 0)
 
         # cprint("context_response_attn_similarity_matrix: ",context_response_attn_similarity_matrix.shape)
         # cprint("context_response_similarity_matrix: ",context_response_similarity_matrix.shape)
